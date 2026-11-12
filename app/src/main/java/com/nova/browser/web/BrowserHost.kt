@@ -53,6 +53,11 @@ class BrowserHost(
 
         /** Intent action that tells PrivateActivity to close itself (wipe). */
         const val CLOSE_PRIVATE_ACTION = "nova.browser.action.CLOSE_PRIVATE"
+
+        /** Intent action that asks for a NEW private tab. PrivateActivity
+         *  is singleTask, so this arrives via onNewIntent when a session
+         *  is already running (menu / tab switcher / launcher shortcut). */
+        const val NEW_PRIVATE_TAB_ACTION = "nova.browser.action.NEW_PRIVATE_TAB"
     }
 
     private var pendingUploadCallback: ValueCallback<Array<Uri>>? = null
@@ -77,7 +82,9 @@ class BrowserHost(
         // system DownloadManager can't read the incognito cookies itself.
         val cookie = try { CookieManager.getInstance().getCookie(url) } catch (_: Exception) { null }
         val id = Downloads.enqueue(
-            context, state.db, url, userAgent, contentDisposition, mimeType, contentLength, cookie
+            context, state.db, url, userAgent, contentDisposition, mimeType, contentLength, cookie,
+            recordToDb = !state.privateMode,
+            onPrivateRow = { state.privateDownloads.add(it) }
         )
         if (id < 0) {
             state.status("Download failed to start")
@@ -121,19 +128,32 @@ class BrowserHost(
             return
         }
         pendingPermissionRequest = request
-        ActivityCompat.requestPermissions(
-            activity, androidPerms.toTypedArray(), PERMISSION_REQUEST_CODE
-        )
+        try {
+            ActivityCompat.requestPermissions(
+                activity, androidPerms.toTypedArray(), PERMISSION_REQUEST_CODE
+            )
+        } catch (_: Exception) {
+            // Activity finishing or permission request not possible now —
+            // deny the page request instead of leaving it hanging.
+            pendingPermissionRequest = null
+            try { request.deny() } catch (_: Exception) { }
+        }
     }
 
     override fun onGeolocation(origin: String, callback: GeolocationPermissions.Callback) {
-        AlertDialog.Builder(context)
-            .setTitle("Share your location?")
-            .setMessage("$origin wants to know your location.")
-            .setPositiveButton("Allow") { _, _ -> callback.invoke(origin, true, false) }
-            .setNegativeButton("Don't allow") { _, _ -> callback.invoke(origin, false, false) }
-            .setOnCancelListener { callback.invoke(origin, false, false) }
-            .show()
+        try {
+            AlertDialog.Builder(context)
+                .setTitle("Share your location?")
+                .setMessage("$origin wants to know your location.")
+                .setPositiveButton("Allow") { _, _ -> callback.invoke(origin, true, false) }
+                .setNegativeButton("Don't allow") { _, _ -> callback.invoke(origin, false, false) }
+                .setOnCancelListener { callback.invoke(origin, false, false) }
+                .show()
+        } catch (_: Exception) {
+            // Activity finishing (e.g. user backed out while the prompt was
+            // being built) — answer "no" instead of crashing on a bad token.
+            try { callback.invoke(origin, false, false) } catch (_: Exception) { }
+        }
     }
 
     override fun onCreateWindow(): WebView? {
@@ -234,8 +254,18 @@ class BrowserHost(
 
     // ---- Private session ----
 
-    fun openPrivateActivity() {
-        context.startActivity(Intent(context, PrivateActivity::class.java))
+    /** Bring the private session forward. [newTab] true asks for a fresh
+     *  private tab (menu / tab switcher / launcher shortcut); false just
+     *  switches to the session that is already open. PrivateActivity is
+     *  singleTask, so an existing instance is reused and the intent
+     *  arrives via onNewIntent — no second instance, no second
+     *  setDataDirectorySuffix call, no wipe of the live data directory. */
+    fun openPrivateActivity(newTab: Boolean = false) {
+        val intent = Intent(context, PrivateActivity::class.java).apply {
+            if (newTab) action = NEW_PRIVATE_TAB_ACTION
+            addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+        }
+        context.startActivity(intent)
     }
 
     /** Tell the private activity to close itself (it wipes on finish).
@@ -284,11 +314,11 @@ class BrowserHost(
                 openUrlInTab(text)
             }
             "nova.browser.action.NEW_TAB" -> state.newTab("")
-            "nova.browser.action.NEW_PRIVATE_TAB" -> {
+            NEW_PRIVATE_TAB_ACTION -> {
                 if (activity is PrivateActivity) {
                     state.newTab("", incognito = true)
                 } else {
-                    openPrivateActivity()
+                    openPrivateActivity(newTab = true)
                 }
             }
         }

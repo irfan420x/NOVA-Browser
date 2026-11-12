@@ -50,9 +50,10 @@ class MainActivity : ComponentActivity() {
                 state = state,
                 onRequestDefaultBrowser = { host.requestDefaultBrowserRole() },
                 isDefaultBrowser = { host.isDefaultBrowser() },
-                onOpenPrivateTab = { host.openPrivateActivity() },
+                onOpenPrivateTab = { host.openPrivateActivity(newTab = true) },
                 onClosePrivateTabs = { host.closePrivateActivity() },
-                onSwitchToNormal = { /* already in normal mode */ }
+                onSwitchToNormal = { /* already in normal mode */ },
+                onSwitchToPrivate = { host.openPrivateActivity(newTab = false) }
             )
         }
     }

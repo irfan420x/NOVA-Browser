@@ -19,8 +19,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nova.browser.data.DownloadItem
 import com.nova.browser.data.Downloads
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Downloads list. Live status comes from DownloadManager and is polled
@@ -38,15 +40,31 @@ fun DownloadsScreen(state: BrowserState) {
 
     fun refresh() { refreshKey++ }
 
+    // The list query (DB + DownloadManager) runs off the main thread —
+    // it ran on the UI thread on every poll tick (once a second while
+    // anything was active). In private mode only the in-memory private
+    // downloads are shown, never the shared table.
     LaunchedEffect(refreshKey) {
-        items = Downloads.list(context, state.db)
+        items = withContext(Dispatchers.IO) {
+            Downloads.list(
+                context, state.db,
+                extraRows = if (state.privateMode) state.privateDownloads else emptyList(),
+                includeDbRows = !state.privateMode
+            )
+        }
     }
     // Poll while downloads are active so progress moves without a tap.
     LaunchedEffect(items.any { it.isActive }) {
         if (items.any { it.isActive }) {
             while (true) {
                 delay(1000)
-                items = Downloads.list(context, state.db)
+                items = withContext(Dispatchers.IO) {
+                    Downloads.list(
+                        context, state.db,
+                        extraRows = if (state.privateMode) state.privateDownloads else emptyList(),
+                        includeDbRows = !state.privateMode
+                    )
+                }
             }
         }
     }
@@ -92,7 +110,10 @@ fun DownloadsScreen(state: BrowserState) {
                             },
                             onCancel = {
                                 scope.launch {
-                                    Downloads.cancel(context, item.row.dmId)
+                                    Downloads.cancel(context, state.db, item.row.dmId)
+                                    if (state.privateMode) {
+                                        state.privateDownloads.removeAll { it.dmId == item.row.dmId }
+                                    }
                                     delay(300)
                                     refresh()
                                 }
@@ -103,6 +124,9 @@ fun DownloadsScreen(state: BrowserState) {
                                         status = "Deleted ${item.row.fileName}"
                                     } else {
                                         status = "Couldn't delete ${item.row.fileName}"
+                                    }
+                                    if (state.privateMode) {
+                                        state.privateDownloads.removeAll { it.dmId == item.row.dmId }
                                     }
                                     refresh()
                                 }

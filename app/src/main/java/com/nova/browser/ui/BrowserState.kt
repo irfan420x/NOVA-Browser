@@ -13,6 +13,7 @@ import androidx.compose.runtime.setValue
 import com.nova.browser.adblock.AdBlockEngine
 import com.nova.browser.adblock.FilterLists
 import com.nova.browser.data.BrowserDb
+import com.nova.browser.data.DownloadRow
 import com.nova.browser.data.Downloads
 import com.nova.browser.data.ErrorLog
 import com.nova.browser.data.SavedTab
@@ -50,7 +51,14 @@ class BrowserState(
     private val webViewFactory: (Tab) -> WebView,
     private val onPrivateEmpty: (() -> Unit)? = null
 ) {
-    val settings = Settings(context)
+    /** Private mode uses its own SharedPreferences file (see Settings), so
+     *  per-site choices made privately never leak into normal mode. Display
+     *  prefs (theme, search engine, text size, ad-block on/off, HTTPS-only,
+     *  desktop default, custom rules) are copied from the normal file each
+     *  time a private session starts, so the private browser looks and
+     *  behaves like the user's browser — without inheriting the site
+     *  exceptions, which would reveal which sites were visited privately. */
+    val settings = Settings(context, privateMode)
     val db = BrowserDb(context)
     var adBlock: AdBlockEngine = try {
         FilterLists.load(context, settings.customFilterRules)
@@ -65,6 +73,11 @@ class BrowserState(
     val tabs = mutableStateListOf<Tab>()
     var currentTabId by mutableStateOf<Long?>(null)
     val currentTab: Tab? get() = tabs.firstOrNull { it.id == currentTabId }
+
+    /** Downloads started in private mode. They live only in memory — the
+     *  shared downloads table is never written from a private session, so
+     *  a private download never appears in the normal Downloads list. */
+    val privateDownloads = mutableStateListOf<DownloadRow>()
 
     var screen by mutableStateOf(BrowserScreen.BROWSER)
     var menuExpanded by mutableStateOf(false)
@@ -83,12 +96,19 @@ class BrowserState(
     private val maxTabs = 12
 
     init {
-        if (!privateMode) {
-            restoreTabs()
-        } else {
+        if (privateMode) {
+            // Fresh private session: drop any per-site choices left behind
+            // by a previous private session that was killed instead of
+            // closed, then copy the safe display prefs from normal mode.
+            settings.clearPrivateSessionData()
+            settings.copySafeFrom(Settings(context))
             newTab("")
+        } else {
+            restoreTabs()
         }
-        if (!settings.shortcutsSeeded) {
+        // Home shortcuts are seeded into the SHARED bookmarks table — never
+        // from a private session.
+        if (!privateMode && !settings.shortcutsSeeded) {
             DEFAULT_SHORTCUTS.forEach { (title, url) ->
                 db.addBookmark(url, title)
                 db.setPinned(url, true)
@@ -150,6 +170,20 @@ class BrowserState(
         tab.webView?.let { return it }
         val webView = webViewFactory(tab)
         tab.webView = webView
+        // A tab created with a URL (restored session, external link, new
+        // window) has no WebView yet — the fresh WebView must be told to
+        // load the URL, or the tab stays blank forever. loadUrl() and
+        // loadHttpAnyway() do their own load, so they set
+        // initialUrlLoaded first to avoid a double load here.
+        if (tab.url.isNotBlank() && !tab.initialUrlLoaded) {
+            tab.initialUrlLoaded = true
+            try {
+                webView.loadUrl(tab.url)
+            } catch (e: Exception) {
+                tab.error = "Couldn't load this page"
+                ErrorLog.log(context, "Browser", "ensureWebView initial load failed for ${tab.url}", e)
+            }
+        }
         return webView
     }
 
@@ -177,6 +211,9 @@ class BrowserState(
         tab.wasUpgradedFromHttp = upgraded
         tab.url = url
         tab.error = null
+        // The load below is the initial load for this URL — mark it so
+        // ensureWebView() does not load the same URL a second time.
+        tab.initialUrlLoaded = true
         try {
             ensureWebView(tab).loadUrl(url)
         } catch (e: Exception) {
@@ -220,6 +257,7 @@ class BrowserState(
         tab.wasUpgradedFromHttp = false
         tab.url = httpUrl
         tab.error = null
+        tab.initialUrlLoaded = true
         try {
             ensureWebView(tab).loadUrl(httpUrl)
         } catch (e: Exception) {
@@ -275,10 +313,13 @@ class BrowserState(
     // ---- Browsing data ----
 
     /** Clear history / cookies+site data / cache. Each part is independent
-     *  and confirmed by the caller before this runs. */
+     *  and confirmed by the caller before this runs. In private mode there
+     *  is no private history to clear — and "Clear history" must never
+     *  wipe the NORMAL history from a private session, so the history
+     *  part is silently skipped there (the Settings row is hidden too). */
     fun clearBrowsingData(clearHistory: Boolean, clearCookies: Boolean, clearCache: Boolean) {
         try {
-            if (clearHistory) db.clearHistory()
+            if (clearHistory && !privateMode) db.clearHistory()
             if (clearCookies) {
                 CookieManager.getInstance().removeAllCookies(null)
                 CookieManager.getInstance().flush()

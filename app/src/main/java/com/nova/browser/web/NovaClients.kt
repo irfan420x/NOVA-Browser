@@ -149,6 +149,16 @@ class NovaWebViewClient(
         view: WebView,
         request: WebResourceRequest
     ): WebResourceResponse? {
+        // THREAD RULE — this runs on a BACKGROUND thread (a WebView worker
+        // pool), not the main thread. NEVER call a WebView method here:
+        // view.url / loadUrl / reload / evaluateJavascript / canGoBack /
+        // settings / findAll all throw "A WebView method was called on
+        // thread ..." and crash the app. Calling view.url here is what
+        // crashed v1.0 on every search (6 crashes in 2 minutes). The only
+        // WebView touch allowed in this method is view.post { ... }, which
+        // is thread-safe and runs the block on the main thread. Everything
+        // else must come from the tab / state, which the main thread keeps
+        // up to date (tab.url is set in onPageStarted).
         // Ad-block layer 1 — network filter. Only GET sub-resource requests
         // over http(s); the main frame is never blocked, and POST bodies
         // are never swallowed.
@@ -156,7 +166,13 @@ class NovaWebViewClient(
         if (request.method != "GET" || request.isForMainFrame) return null
         val url = request.url.toString()
         if (!UrlUtils.isHttpUrl(url)) return null
-        val pageHost = UrlUtils.extractHost(view.url ?: tab.url)
+        // v1.1 FIX: shouldInterceptRequest runs on a background thread and
+        // WebView.getUrl() may only be called on the main thread — calling
+        // view.url here crashed the app on every page load (the search
+        // crash). The tab tracks the current URL itself (set in
+        // onPageStarted on the main thread), so use that. A blank tab URL
+        // means unknown; shouldBlock(null) handles that safely.
+        val pageHost = UrlUtils.extractHost(tab.url)
         if (state.settings.isAdBlockOffFor(pageHost)) return null
         val result = state.adBlock.shouldBlock(url, pageHost)
         if (result == BlockResult.ALLOWED) return null
@@ -236,6 +252,9 @@ class NovaWebViewClient(
     ) {
         // Never proceed automatically: the UI shows a dialog and the user
         // decides. The handler is kept on the tab until it is answered.
+        // Loading is stopped while the dialog is open, so the progress
+        // bar does not spin forever if the user cancels (or walks away).
+        tab.isLoading = false
         tab.sslHandler = handler
         tab.sslError = error
         tab.sslErrorUrl = view.url

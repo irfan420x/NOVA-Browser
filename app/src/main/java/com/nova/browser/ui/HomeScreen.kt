@@ -27,6 +27,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.nova.browser.data.Bookmark
 import com.nova.browser.data.HistoryEntry
 import com.nova.browser.web.UrlUtils
@@ -44,9 +46,15 @@ fun HomeScreen(state: BrowserState) {
     var recent by remember { mutableStateOf<List<HistoryEntry>>(emptyList()) }
     var refreshKey by remember { mutableStateOf(0) }
 
+    // DB reads off the main thread — the bookmark/history queries ran on
+    // the UI thread on every home refresh (and on every tab switch).
     LaunchedEffect(refreshKey) {
-        shortcuts = state.db.listBookmarks().filter { it.pinned }
-        recent = if (state.privateMode) emptyList() else state.db.topSites(8)
+        shortcuts = withContext(Dispatchers.IO) {
+            state.db.listBookmarks().filter { it.pinned }
+        }
+        recent = if (state.privateMode) emptyList() else withContext(Dispatchers.IO) {
+            state.db.topSites(8)
+        }
     }
     // Refresh when returning to home (a bookmark may have been added).
     LaunchedEffect(state.currentTab?.id) { refreshKey++ }
@@ -212,7 +220,12 @@ private fun ShortcutChip(bookmark: Bookmark, modifier: Modifier = Modifier, onCl
             contentAlignment = Alignment.Center
         ) {
             Text(
-                (bookmark.title.firstOrNull() ?: '?').uppercaseChar().toString(),
+                // First code POINT, not first Char: a leading emoji is a
+                // surrogate pair, and firstOrNull() returned its lone
+                // high surrogate (rendered as "?").
+                bookmark.title.takeIf { it.isNotEmpty() }?.let {
+                    String(Character.toChars(it.codePointAt(0))).uppercase()
+                } ?: "?",
                 color = androidx.compose.ui.graphics.Color.White,
                 fontWeight = FontWeight.Bold,
                 style = MaterialTheme.typography.titleMedium

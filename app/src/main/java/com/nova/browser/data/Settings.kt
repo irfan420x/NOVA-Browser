@@ -16,9 +16,20 @@ enum class SearchEngine(val id: String, val label: String) {
 }
 
 /** All user settings live in one SharedPreferences file ("nova_browser").
- *  Plain getters/setters — no DataStore, no new dependencies in v1.0. */
-class Settings(context: Context) {
-    private val prefs = context.getSharedPreferences("nova_browser", Context.MODE_PRIVATE)
+ *  Plain getters/setters — no DataStore, no new dependencies in v1.0.
+ *
+ *  [private] selects the separate private-mode file
+ *  ("nova_browser_private"). The :incognito process must never write
+ *  per-site choices (ad-block-off hosts, HTTPS exceptions) into the
+ *  normal file — those sets reveal which sites were visited privately.
+ *  Only display/search prefs are copied from the normal file at the
+ *  start of a private session (see [copySafeFrom]); the per-site sets
+ *  start empty and are wiped again by [clearPrivateSessionData]. */
+class Settings(context: Context, private: Boolean = false) {
+    private val prefs = context.getSharedPreferences(
+        if (private) "nova_browser_private" else "nova_browser",
+        Context.MODE_PRIVATE
+    )
 
     var darkTheme: Boolean
         get() = prefs.getBoolean("ui_dark_theme", true)
@@ -100,4 +111,27 @@ class Settings(context: Context) {
     var defaultBrowserPromptShown: Boolean
         get() = prefs.getBoolean("default_browser_prompt_shown", false)
         set(v) = prefs.edit().putBoolean("default_browser_prompt_shown", v).apply()
+
+    /** Copies only the prefs that are safe to share with a private
+     *  session — display and search choices, not per-site history.
+     *  Deliberately NOT copied: adBlockOffHosts and httpsExceptionHosts
+     *  (they reveal which sites were visited) and shortcutsSeeded. */
+    fun copySafeFrom(other: Settings) {
+        darkTheme = other.darkTheme
+        searchEngine = other.searchEngine
+        adBlockEnabled = other.adBlockEnabled
+        httpsOnly = other.httpsOnly
+        desktopModeDefault = other.desktopModeDefault
+        textZoom = other.textZoom
+        customFilterRules = other.customFilterRules
+    }
+
+    /** Drops the per-site choices of a private session. Called at the
+     *  start of a private session (in case the previous one was killed
+     *  instead of closed) — the full wipe on close is in
+     *  PrivateActivity.onDestroy. */
+    fun clearPrivateSessionData() {
+        adBlockOffHosts = emptySet()
+        httpsExceptionHosts = emptySet()
+    }
 }

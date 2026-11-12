@@ -44,11 +44,17 @@ object Downloads {
      *  [cookie] is the page's cookies for this URL (the system
      *  DownloadManager can't read the WebView's cookies itself — and in
      *  private mode it can't read the incognito process's at all), so
-     *  downloads behind a login still work. */
+     *  downloads behind a login still work.
+     *  [recordToDb] is false in private mode: the shared downloads table
+     *  is never written from a private session, so a private download
+     *  never appears in the normal Downloads list. The row is handed to
+     *  [onPrivateRow] instead and lives only in memory. */
     fun enqueue(
         context: Context, db: BrowserDb,
         url: String, userAgent: String?, contentDisposition: String?,
-        mimeType: String?, contentLength: Long, cookie: String? = null
+        mimeType: String?, contentLength: Long, cookie: String? = null,
+        recordToDb: Boolean = true,
+        onPrivateRow: ((DownloadRow) -> Unit)? = null
     ): Long {
         return try {
             val fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
@@ -67,7 +73,13 @@ object Downloads {
             if (cookie != null) request.addRequestHeader("Cookie", cookie)
             val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
             val id = dm.enqueue(request)
-            db.addDownload(id, url, fileName, mimeType)
+            if (recordToDb) {
+                db.addDownload(id, url, fileName, mimeType)
+            } else {
+                onPrivateRow?.invoke(
+                    DownloadRow(0, id, url, fileName, mimeType, System.currentTimeMillis())
+                )
+            }
             id
         } catch (e: Exception) {
             ErrorLog.log(context, "Downloads", "Failed to start download of $url", e)
@@ -76,9 +88,15 @@ object Downloads {
     }
 
     /** Current live state for every download the DB knows about. Rows whose
-     *  DownloadManager entry is gone (system cleared it) are dropped. */
-    fun list(context: Context, db: BrowserDb): List<DownloadItem> {
-        val rows = db.listDownloads()
+     *  DownloadManager entry is gone (system cleared it) are dropped.
+     *  [extraRows] are in-memory rows (private-mode downloads) merged
+     *  in; with [includeDbRows] false only the extra rows are shown. */
+    fun list(
+        context: Context, db: BrowserDb,
+        extraRows: List<DownloadRow> = emptyList(),
+        includeDbRows: Boolean = true
+    ): List<DownloadItem> {
+        val rows = (if (includeDbRows) db.listDownloads() else emptyList()) + extraRows
         if (rows.isEmpty()) return emptyList()
         val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         val out = ArrayList<DownloadItem>()
@@ -90,10 +108,11 @@ object Downloads {
                 val iDone = cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR)
                 val iTotal = cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)
                 val iReason = cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON)
+                val byDmId = rows.associateBy { it.dmId }
                 val live = HashMap<Long, DownloadItem>()
                 while (cursor.moveToNext()) {
                     val dmId = cursor.getLong(iId)
-                    val row = rows.firstOrNull { it.dmId == dmId } ?: continue
+                    val row = byDmId[dmId] ?: continue
                     live[dmId] = DownloadItem(
                         row = row,
                         status = cursor.getInt(iStatus),
@@ -119,10 +138,13 @@ object Downloads {
         return out
     }
 
-    fun cancel(context: Context, dmId: Long): Boolean {
+    /** Cancel the system download and drop its record, so a cancelled
+     *  download does not sit in the list as a permanent "Failed" row. */
+    fun cancel(context: Context, db: BrowserDb, dmId: Long): Boolean {
         return try {
             val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
             dm.remove(dmId)
+            db.removeDownload(dmId)
             true
         } catch (_: Exception) {
             false

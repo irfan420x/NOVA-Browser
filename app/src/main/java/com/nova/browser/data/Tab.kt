@@ -49,6 +49,13 @@ class Tab(
     var sslError by mutableStateOf<SslError?>(null)
     var sslErrorUrl by mutableStateOf<String?>(null)
 
+    /** True once a WebView has been told to load [url] (see
+     *  BrowserState.ensureWebView). Restored tabs and tabs created from an
+     *  external link carry a URL but no WebView yet; without this flag the
+     *  fresh WebView would never be told to load anything and the tab
+     *  would stay blank. */
+    var initialUrlLoaded by mutableStateOf(false)
+
     fun resetForNavigation(newUrl: String) {
         url = newUrl
         error = null

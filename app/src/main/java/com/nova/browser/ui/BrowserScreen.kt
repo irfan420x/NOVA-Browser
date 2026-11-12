@@ -56,7 +56,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.nova.browser.data.Tab
 import com.nova.browser.web.NovaWebView
 import com.nova.browser.web.UrlUtils
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 /** App root: theme + screen router + status toast + SSL dialog. */
 @Composable
@@ -66,7 +68,8 @@ fun NovaBrowserApp(
     isDefaultBrowser: () -> Boolean,
     onOpenPrivateTab: () -> Unit,
     onClosePrivateTabs: () -> Unit,
-    onSwitchToNormal: () -> Unit
+    onSwitchToNormal: () -> Unit,
+    onSwitchToPrivate: () -> Unit = { }
 ) {
     NovaTheme(darkTheme = state.settings.darkTheme) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -77,7 +80,8 @@ fun NovaBrowserApp(
             when (state.screen) {
                 BrowserScreen.BROWSER -> BrowserContent(state, onOpenPrivateTab)
                 BrowserScreen.TABS -> TabSwitcherScreen(
-                    state, onOpenPrivateTab, onClosePrivateTabs, onSwitchToNormal
+                    state, onOpenPrivateTab, onClosePrivateTabs, onSwitchToNormal,
+                    onSwitchToPrivate
                 )
                 BrowserScreen.BOOKMARKS -> BookmarksScreen(state)
                 BrowserScreen.DOWNLOADS -> DownloadsScreen(state)
@@ -123,13 +127,23 @@ fun NovaBrowserApp(
 fun BrowserContent(state: BrowserState, onOpenPrivateTab: () -> Unit) {
     val tab = state.currentTab
 
-    // Back order: find bar > address editing > menu > shield > page back.
-    // When nothing is left to handle, the handler is disabled and the
-    // system back press exits the activity (normal Android behaviour).
-    val canHandleBack = tab?.findActive == true || state.addressEditing ||
+    // Back order: SSL dialog > find bar > address editing > menu > shield
+    // > page back. When nothing is left to handle, the handler is disabled
+    // and the system back press exits the activity (normal behaviour).
+    val canHandleBack = tab?.sslHandler != null || tab?.findActive == true || state.addressEditing ||
         state.menuExpanded || state.shieldOpen || tab?.canGoBack == true
     BackHandler(enabled = canHandleBack) {
         when {
+            tab?.sslHandler != null -> {
+                // Back from the SSL dialog means "don't load this page" —
+                // the dialog must not trap the user, and the progress bar
+                // must not keep spinning afterwards.
+                try { tab.sslHandler?.cancel() } catch (_: Exception) { }
+                tab.sslHandler = null
+                tab.sslError = null
+                tab.sslErrorUrl = null
+                tab.isLoading = false
+            }
             tab?.findActive == true -> {
                 tab.findActive = false
                 try { tab.webView?.clearMatches() } catch (_: Exception) { }
@@ -280,13 +294,23 @@ fun BrowserBottomBar(state: BrowserState, tab: Tab?, onOpenPrivateTab: () -> Uni
                     )
                 }
             }
+            // isBookmarked() is a DB query — never run it during
+            // composition (it ran on every frame while a page loaded).
+            // Cache it per URL and update it directly on toggle.
+            var bookmarked by remember { mutableStateOf(false) }
+            val tabUrl = tab?.url
+            LaunchedEffect(tabUrl) {
+                bookmarked = tabUrl?.let {
+                    withContext(Dispatchers.IO) { state.isBookmarked(it) }
+                } ?: false
+            }
             IconButton(onClick = {
                 tab?.let {
                     val on = state.toggleBookmark(it)
+                    bookmarked = on
                     state.status(if (on) "Bookmarked" else "Bookmark removed")
                 }
             }) {
-                val bookmarked = tab != null && state.isBookmarked(tab.url)
                 Icon(
                     if (bookmarked) Icons.Filled.Star else Icons.Filled.StarBorder,
                     "Bookmark",
@@ -338,6 +362,9 @@ fun BrowserBottomBar(state: BrowserState, tab: Tab?, onOpenPrivateTab: () -> Uni
                     )
                     DropdownMenuItem(
                         text = { Text("Find in page") },
+                        // A home tab has no page to search — the find bar
+                        // would open over the home screen and do nothing.
+                        enabled = tab?.url?.isNotBlank() == true,
                         onClick = {
                             state.menuExpanded = false
                             tab?.let { it.findActive = true }
@@ -636,6 +663,7 @@ fun SslDialog(tab: Tab) {
                 try { tab.sslHandler?.proceed() } catch (_: Exception) { }
                 tab.sslHandler = null
                 tab.sslError = null
+                tab.sslErrorUrl = null
             }) { Text("Continue anyway") }
         },
         dismissButton = {
@@ -643,6 +671,8 @@ fun SslDialog(tab: Tab) {
                 try { tab.sslHandler?.cancel() } catch (_: Exception) { }
                 tab.sslHandler = null
                 tab.sslError = null
+                tab.sslErrorUrl = null
+                tab.isLoading = false
             }) { Text("Go back") }
         }
     )

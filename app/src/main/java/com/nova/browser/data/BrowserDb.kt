@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import com.nova.browser.web.UrlUtils
 
 data class HistoryEntry(
     val id: Long, val url: String, val title: String,
@@ -75,29 +76,38 @@ class BrowserDb(context: Context) :
 
     // ---- History ----
 
-    /** Record a visit: insert, or bump the count and time on re-visit. */
+    /** Record a visit: insert, or bump the count and time on re-visit.
+     *  The check-then-insert runs inside one transaction — two visits to
+     *  the same new URL at once used to race: both saw "no row", both
+     *  inserted, and the second died on the UNIQUE(url) constraint. */
     fun recordVisit(url: String, title: String) {
         if (url.isBlank()) return
         try {
             val db = writableDatabase
             val now = System.currentTimeMillis()
-            val values = ContentValues().apply {
-                put("url", url)
-                put("title", title)
-                put("visited_at", now)
-            }
-            val updated = db.update(
-                "history", values, "url = ?",
-                arrayOf(url)
-            )
-            if (updated == 0) {
-                values.put("visit_count", 1)
-                db.insert("history", null, values)
-            } else {
-                db.execSQL(
-                    "UPDATE history SET visit_count = visit_count + 1, visited_at = ?, title = ? WHERE url = ?",
-                    arrayOf(now, title, url)
+            db.beginTransaction()
+            try {
+                val values = ContentValues().apply {
+                    put("url", url)
+                    put("title", title)
+                    put("visited_at", now)
+                }
+                val updated = db.update(
+                    "history", values, "url = ?",
+                    arrayOf(url)
                 )
+                if (updated == 0) {
+                    values.put("visit_count", 1)
+                    db.insertOrThrow("history", null, values)
+                } else {
+                    db.execSQL(
+                        "UPDATE history SET visit_count = visit_count + 1 WHERE url = ?",
+                        arrayOf(url)
+                    )
+                }
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
             }
         } catch (e: Exception) {
             ErrorLog.log(appContext, "BrowserDb", "recordVisit failed for $url", e)
@@ -107,10 +117,13 @@ class BrowserDb(context: Context) :
     fun searchHistory(query: String, limit: Int = 100): List<HistoryEntry> {
         return try {
             val db = readableDatabase
+            // Escape LIKE wildcards so a query containing % or _ matches
+            // literally instead of matching far more rows than asked for.
             val (selection, args) = if (query.isBlank()) {
                 null to null
             } else {
-                "url LIKE ? OR title LIKE ?" to arrayOf("%$query%", "%$query%")
+                val escaped = "%${UrlUtils.escapeLike(query)}%"
+                "url LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\'" to arrayOf(escaped, escaped)
             }
             val out = ArrayList<HistoryEntry>()
             db.query(

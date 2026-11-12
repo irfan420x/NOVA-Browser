@@ -10,6 +10,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.nova.browser.data.SearchEngine
@@ -37,6 +38,21 @@ fun SettingsScreen(
     var status by remember { mutableStateOf<String?>(null) }
     var confirm by remember { mutableStateOf<String?>(null) } // history|cookies|cache
     var isDefault by remember { mutableStateOf(isDefaultBrowser()) }
+
+    // Version from the installed package — never hardcoded (the About
+    // text still said "1.0 (versionCode 1)" after the bump to 1.1).
+    val context = LocalContext.current
+    val versionText = remember {
+        try {
+            val info = context.packageManager.getPackageInfo(context.packageName, 0)
+            @Suppress("DEPRECATION")
+            val code = if (android.os.Build.VERSION.SDK_INT >= 28) info.longVersionCode
+            else info.versionCode.toLong()
+            "NOVA Browser ${info.versionName} (versionCode $code)"
+        } catch (_: Exception) {
+            "NOVA Browser"
+        }
+    }
 
     fun applyTextZoom() {
         val zoom = textZoom.toInt()
@@ -190,8 +206,13 @@ fun SettingsScreen(
             }
 
             SettingsSection("Browsing data") {
-                SettingsAction("Clear history", "Remove every visited page") {
-                    confirm = "history"
+                // In private mode there is no private history to clear,
+                // and "Clear history" must never wipe the NORMAL history
+                // from a private session (clearBrowsingData guards it too).
+                if (!state.privateMode) {
+                    SettingsAction("Clear history", "Remove every visited page") {
+                        confirm = "history"
+                    }
                 }
                 SettingsAction("Clear cookies & site data", "Signs you out of websites") {
                     confirm = "cookies"
@@ -219,7 +240,7 @@ fun SettingsScreen(
                 }
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    "NOVA Browser 1.0 (versionCode 1)\nBuilt-in ad blocker · No account · Your data stays on your phone",
+                    "$versionText\nBuilt-in ad blocker · No account · Your data stays on your phone",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

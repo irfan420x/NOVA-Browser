@@ -35,7 +35,8 @@ fun TabSwitcherScreen(
     state: BrowserState,
     onOpenPrivateTab: () -> Unit,
     onClosePrivateTabs: () -> Unit,
-    onSwitchToNormal: () -> Unit
+    onSwitchToNormal: () -> Unit,
+    onSwitchToPrivate: () -> Unit = { }
 ) {
     val tabs = state.tabs
     val currentId = state.currentTabId
@@ -122,7 +123,9 @@ fun TabSwitcherScreen(
                         )
                         Spacer(Modifier.height(12.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = onOpenPrivateTab, modifier = Modifier.weight(1f)) {
+                            // "Switch" goes to the tabs that are already
+                            // open — it must NOT create a new blank tab.
+                            Button(onClick = onSwitchToPrivate, modifier = Modifier.weight(1f)) {
                                 Text("Switch")
                             }
                             OutlinedButton(onClick = onClosePrivateTabs, modifier = Modifier.weight(1f)) {

@@ -119,4 +119,16 @@ object UrlUtils {
         if (tld.all { it.isDigit() }) return false
         return true
     }
+
+    /** Escapes LIKE wildcards (% and _) in a user-typed search string so they
+     *  are matched literally. Without this, a query containing % or _
+     *  matches far more rows than the user asked for. */
+    fun escapeLike(input: String): String {
+        val sb = StringBuilder(input.length * 2)
+        for (c in input) {
+            if (c == '%' || c == '_' || c == '\\') sb.append('\\')
+            sb.append(c)
+        }
+        return sb.toString()
+    }
 }

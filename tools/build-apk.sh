@@ -53,7 +53,7 @@ echo "== 2. aapt2 link =="
 LINK_ARGS=(-I "$ANDROID_JAR" --manifest "$SRC/AndroidManifest.xml"
     --auto-add-overlay --java "$BUILD/gen"
     --min-sdk-version 29 --target-sdk-version 35
-    --version-code 1 --version-name 1.0
+    --version-code 2 --version-name 1.1
     -A "$SRC/assets"
     -o "$BUILD/apk/app-unsigned.apk")
 while read -r pkg resdir; do

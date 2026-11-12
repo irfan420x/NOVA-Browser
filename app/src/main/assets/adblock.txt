@@ -9,7 +9,7 @@
 ! Lines starting with ! are comments. [trackers] switches the section:
 ! domains listed there are counted as trackers, not ads.
 ! This is a starter list, not full EasyList — it covers the biggest
-! ad/tracker networks. Users can add custom rules in Settings (v1.1).
+! ad/tracker networks. Users can add custom rules in Settings.
 
 ||doubleclick.net^
 ||googlesyndication.com^
