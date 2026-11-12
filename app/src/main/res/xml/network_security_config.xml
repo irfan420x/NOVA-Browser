@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cleartext is permitted at the system level only because NOVA Browser
+     enforces HTTPS-only itself (see UrlUtils.shouldUpgradeToHttps): http
+     is upgraded to https for every host except localhost/LAN, where local
+     development servers legitimately serve plain http. Without this config
+     the system would block even http://localhost:3000. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

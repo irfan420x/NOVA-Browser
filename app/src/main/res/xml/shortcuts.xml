@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher shortcuts (long-press the app icon). -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="new_tab"
+        android:enabled="true"
+        android:icon="@drawable/ic_launcher_foreground"
+        android:shortcutShortLabel="@string/shortcut_new_tab"
+        android:shortcutLongLabel="@string/shortcut_new_tab">
+        <intent
+            android:action="nova.browser.action.NEW_TAB"
+            android:targetPackage="com.nova.browser"
+            android:targetClass="com.nova.browser.MainActivity" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="new_private_tab"
+        android:enabled="true"
+        android:icon="@drawable/ic_launcher_foreground"
+        android:shortcutShortLabel="@string/shortcut_new_private_tab"
+        android:shortcutLongLabel="@string/shortcut_new_private_tab">
+        <intent
+            android:action="nova.browser.action.NEW_PRIVATE_TAB"
+            android:targetPackage="com.nova.browser"
+            android:targetClass="com.nova.browser.PrivateActivity" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+</shortcuts>

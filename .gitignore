@@ -1,0 +1,14 @@
+# Build outputs
+build/
+*.apk
+# Fetched dependencies (73 MB of AARs/JARs — re-fetch with tools/resolve_deps.py)
+deps/
+# Private snapshot of the dependency jars/AARs used by the build script
+# (90 jars + 45 AAR packages — re-snapshot from nova-files if missing)
+deps-snapshot/
+# Signing
+*.keystore
+# Local config
+local.properties
+.idea/
+*.iml

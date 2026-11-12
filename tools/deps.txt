@@ -1,0 +1,18 @@
+# Root Maven artifacts for NOVA apps. Fetched with:
+#   python3 tools/resolve_deps.py deps/ $(cat tools/deps.txt)
+# Transitive dependencies resolve automatically from the artifacts' POMs.
+androidx.compose.ui:ui:1.7.2
+androidx.compose.material3:material3:1.3.0
+androidx.compose.material:material-icons-extended:1.7.2
+androidx.activity:activity-compose:1.9.2
+androidx.lifecycle:lifecycle-runtime-compose:2.8.5
+androidx.lifecycle:lifecycle-viewmodel-compose:2.8.5
+androidx.core:core-ktx:1.13.1
+androidx.appcompat:appcompat:1.2.0
+androidx.biometric:biometric:1.1.0
+io.coil-kt:coil-compose:2.7.0
+com.google.accompanist:accompanist-drawablepainter:0.32.0
+org.jetbrains.kotlin:kotlin-stdlib:2.0.21
+org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3
+org.apache.commons:commons-compress:1.26.2
+com.github.junrar:junrar:7.5.2
