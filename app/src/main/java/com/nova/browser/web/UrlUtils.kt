@@ -120,6 +120,20 @@ object UrlUtils {
         return true
     }
 
+    /** True for YouTube hosts — youtube.com and all its subdomains,
+     *  youtube-nocookie.com (embeds) and youtu.be (short links). Used to
+     *  decide where the YouTube Ad Skipper runs. Suffix matching on the
+     *  dot boundary, so youtubefake.com and youtube.com.evil.com do not
+     *  match. Never throws. */
+    fun isYouTubeHost(host: String?): Boolean {
+        if (host == null) return false
+        val h = host.lowercase().trim()
+        if (h.isEmpty()) return false
+        return h == "youtube.com" || h.endsWith(".youtube.com") ||
+            h == "youtube-nocookie.com" || h.endsWith(".youtube-nocookie.com") ||
+            h == "youtu.be" || h.endsWith(".youtu.be")
+    }
+
     /** Escapes LIKE wildcards (% and _) in a user-typed search string so they
      *  are matched literally. Without this, a query containing % or _
      *  matches far more rows than the user asked for. */

@@ -44,6 +44,16 @@ class Settings(context: Context, private: Boolean = false) {
         get() = prefs.getBoolean("adblock_enabled", true)
         set(v) = prefs.edit().putBoolean("adblock_enabled", v).apply()
 
+    /** YouTube Ad Skipper — auto-skips pre-roll and mid-roll video ads on
+     *  YouTube by clicking Skip and seeking past unskippable ads. It is its
+     *  own toggle (independent of the global ad-block switch) and defaults
+     *  on. It never blocks the ad request — the ad starts, then is skipped
+     *  instantly — which is the less-detectable approach against YouTube's
+     *  anti-adblock wall. See assets/youtube-skipper.js. */
+    var youtubeAdSkipper: Boolean
+        get() = prefs.getBoolean("youtube_ad_skipper", true)
+        set(v) = prefs.edit().putBoolean("youtube_ad_skipper", v).apply()
+
     /** Upgrade http to https, except localhost/LAN hosts. */
     var httpsOnly: Boolean
         get() = prefs.getBoolean("https_only", true)
@@ -120,6 +130,7 @@ class Settings(context: Context, private: Boolean = false) {
         darkTheme = other.darkTheme
         searchEngine = other.searchEngine
         adBlockEnabled = other.adBlockEnabled
+        youtubeAdSkipper = other.youtubeAdSkipper
         httpsOnly = other.httpsOnly
         desktopModeDefault = other.desktopModeDefault
         textZoom = other.textZoom

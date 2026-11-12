@@ -225,6 +225,36 @@ class NovaWebViewClient(
                 }
             }
         }
+        // YouTube Ad Skipper (v1.2) — a content script, not a network block:
+        // it mutes/skips video ads after they start. Independent of the
+        // global ad-block switch; its own toggle in Settings controls it.
+        if (state.shouldInjectSkipper(url)) injectYoutubeSkipper(view)
+    }
+
+    /** Re-inject the skipper on SPA navigations. YouTube changes videos
+     *  without a page load, so onPageStarted/onPageFinished do not fire —
+     *  without this, the skipper would go stale after the first video.
+     *  This is also where the tab URL stays honest on SPA navigations
+     *  (the address bar would otherwise show the previous video). Runs
+     *  on the main thread, so evaluateJavascript is legal here. */
+    override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
+        super.doUpdateVisitedHistory(view, url, isReload)
+        if (UrlUtils.isHttpUrl(url)) {
+            tab.url = url
+            if (state.shouldInjectSkipper(url)) injectYoutubeSkipper(view)
+        }
+    }
+
+    /** Inject the YouTube Ad Skipper content script. The script itself is
+     *  idempotent (window.__novaYtSkipper guard), so re-injection on SPA
+     *  navigations is harmless. */
+    private fun injectYoutubeSkipper(view: WebView) {
+        val js = state.youtubeSkipperJs ?: return
+        try {
+            view.evaluateJavascript(js, null)
+        } catch (_: Exception) {
+            // A page that rejects injection keeps working.
+        }
     }
 
     override fun onReceivedError(

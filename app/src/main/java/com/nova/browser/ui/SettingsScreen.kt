@@ -29,6 +29,7 @@ fun SettingsScreen(
     val settings = state.settings
     var darkTheme by remember { mutableStateOf(settings.darkTheme) }
     var adBlock by remember { mutableStateOf(settings.adBlockEnabled) }
+    var ytSkipper by remember { mutableStateOf(settings.youtubeAdSkipper) }
     var httpsOnly by remember { mutableStateOf(settings.httpsOnly) }
     var desktopDefault by remember { mutableStateOf(settings.desktopModeDefault) }
     var textZoom by remember { mutableStateOf(settings.textZoom.toFloat()) }
@@ -112,6 +113,15 @@ fun SettingsScreen(
                     onChange = {
                         adBlock = it
                         settings.adBlockEnabled = it
+                    }
+                )
+                SettingsSwitch(
+                    title = "Skip YouTube video ads",
+                    subtitle = "Auto-skips pre-roll & mid-roll ads on YouTube (part of ad blocking)",
+                    checked = ytSkipper,
+                    onChange = {
+                        ytSkipper = it
+                        settings.youtubeAdSkipper = it
                     }
                 )
                 SettingsSwitch(

@@ -87,6 +87,24 @@ fun main() {
     check("empty stays empty", UrlUtils.escapeLike("") == "")
     check("Bengali text unchanged", UrlUtils.escapeLike("বাংলা") == "বাংলা")
 
+    // --- isYouTubeHost (v1.2: where the Ad Skipper runs) ---
+    check("youtube.com is YouTube", UrlUtils.isYouTubeHost("youtube.com"))
+    check("www.youtube.com is YouTube", UrlUtils.isYouTubeHost("www.youtube.com"))
+    check("m.youtube.com is YouTube", UrlUtils.isYouTubeHost("m.youtube.com"))
+    check("music.youtube.com is YouTube", UrlUtils.isYouTubeHost("music.youtube.com"))
+    check("youtube-nocookie.com is YouTube", UrlUtils.isYouTubeHost("youtube-nocookie.com"))
+    check("www.youtube-nocookie.com is YouTube", UrlUtils.isYouTubeHost("www.youtube-nocookie.com"))
+    check("youtu.be is YouTube", UrlUtils.isYouTubeHost("youtu.be"))
+    check("www.youtu.be is YouTube", UrlUtils.isYouTubeHost("www.youtu.be"))
+    check("uppercase host matches", UrlUtils.isYouTubeHost("WWW.YOUTUBE.COM"))
+    check("youtubefake.com is not YouTube", !UrlUtils.isYouTubeHost("youtubefake.com"))
+    check("notyoutube.com is not YouTube", !UrlUtils.isYouTubeHost("notyoutube.com"))
+    check("fakeyoutube.com is not YouTube", !UrlUtils.isYouTubeHost("fakeyoutube.com"))
+    check("youtube.com.evil.com is not YouTube", !UrlUtils.isYouTubeHost("youtube.com.evil.com"))
+    check("google.com is not YouTube", !UrlUtils.isYouTubeHost("google.com"))
+    check("null host is not YouTube", !UrlUtils.isYouTubeHost(null))
+    check("empty host is not YouTube", !UrlUtils.isYouTubeHost(""))
+
     println("UrlUtilsTest: $passed passed, ${failures.size} failed")
     if (failures.isNotEmpty()) {
         failures.forEach { println("  FAIL: $it") }

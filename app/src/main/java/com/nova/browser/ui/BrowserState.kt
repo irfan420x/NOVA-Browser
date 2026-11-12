@@ -20,6 +20,7 @@ import com.nova.browser.data.SavedTab
 import com.nova.browser.data.Settings
 import com.nova.browser.data.Tab
 import com.nova.browser.web.UrlUtils
+import com.nova.browser.web.YoutubeSkipper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -67,6 +68,19 @@ class BrowserState(
         AdBlockEngine.parse("")
     }
         private set
+
+    /** The YouTube Ad Skipper content script (assets/youtube-skipper.js),
+     *  loaded once. Null when the asset is missing — injection is then
+     *  skipped (fail open: YouTube just plays its ads). */
+    val youtubeSkipperJs: String? = YoutubeSkipper.load(context)
+
+    /** True when the YouTube Ad Skipper should run on [url]: the toggle is
+     *  on and the host is YouTube. The skipper is independent of the global
+     *  ad-block switch — it has its own toggle in Settings. */
+    fun shouldInjectSkipper(url: String): Boolean {
+        if (!settings.youtubeAdSkipper) return false
+        return UrlUtils.isYouTubeHost(UrlUtils.extractHost(url))
+    }
 
     private val ioScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
