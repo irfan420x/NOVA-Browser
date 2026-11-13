@@ -27,6 +27,7 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import androidx.compose.ui.graphics.Color
 
 /**
  * Bookmarks and history in one screen (two tabs). Bookmarks can be pinned
@@ -55,8 +56,9 @@ fun BookmarksScreen(state: BrowserState) {
     LaunchedEffect(tab) { state.bookmarksTab = tab }
 
     Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
-            TopAppBar(
+            GlassTopAppBar(
                 title = { Text(if (tab == 0) "Bookmarks" else "History") },
                 navigationIcon = {
                     IconButton(onClick = { state.screen = BrowserScreen.BROWSER }) {
@@ -84,7 +86,7 @@ fun BookmarksScreen(state: BrowserState) {
                 } else {
                     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(bookmarks, key = { it.id }) { bookmark ->
-                            Card(Modifier.fillMaxWidth()) {
+                            GlassCard(Modifier.fillMaxWidth()) {
                                 Row(
                                     Modifier.fillMaxWidth()
                                         .clickable {
@@ -148,7 +150,7 @@ fun BookmarksScreen(state: BrowserState) {
                     } else {
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             items(history, key = { it.id }) { entry ->
-                                Card(Modifier.fillMaxWidth()) {
+                                GlassCard(Modifier.fillMaxWidth()) {
                                     Row(
                                         Modifier.fillMaxWidth()
                                             .clickable {

@@ -18,12 +18,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.filled.Article
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -32,19 +35,24 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -54,8 +62,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.nova.browser.data.Tab
+import com.nova.browser.devtools.DevToolsHub
+import com.nova.browser.reader.ReaderRunner
 import com.nova.browser.web.NovaWebView
 import com.nova.browser.web.UrlUtils
+import com.nova.browser.web.isSupportedUrl
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -72,7 +83,11 @@ fun NovaBrowserApp(
     onSwitchToPrivate: () -> Unit = { }
 ) {
     NovaTheme(darkTheme = state.settings.darkTheme) {
-        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        // Glass Premium (v2.1): the gradient + glow canvas sits behind
+        // everything; the root Surface is transparent and every screen's
+        // Scaffold uses a transparent container color so it shows through.
+        GlassBackground(darkTheme = state.settings.darkTheme) {
+        Surface(Modifier.fillMaxSize(), color = Color.Transparent) {
             // Back from any sub-screen returns to the browser, never out of the app.
             if (state.screen != BrowserScreen.BROWSER) {
                 BackHandler { state.screen = BrowserScreen.BROWSER }
@@ -91,6 +106,72 @@ fun NovaBrowserApp(
                 BrowserScreen.ERROR_LOG -> ErrorLogScreen(
                     onBack = { state.screen = BrowserScreen.BROWSER }
                 )
+                BrowserScreen.EXTENSIONS -> ExtensionsScreen(
+                    state,
+                    onBack = { state.screen = BrowserScreen.BROWSER }
+                )
+                BrowserScreen.DEVTOOLS -> DevToolsScreen(
+                    host = state.devToolsHost,
+                    onClose = { state.screen = BrowserScreen.BROWSER }
+                )
+                BrowserScreen.HTTP_CLIENT -> HttpClientScreen(
+                    onBack = { state.screen = BrowserScreen.BROWSER }
+                )
+            }
+
+            // M2: the reader belongs to one tab. Switching to an
+            // already-loaded tab fires no navigation event, so without
+            // this the previous tab's article would stay plastered over
+            // the new tab until the user presses Back. Close it on tab
+            // switch (the reader is cheap to re-open from the menu).
+            LaunchedEffect(state.currentTabId) {
+                state.readerArticle = null
+                state.readerUrl = null
+            }
+
+            // W4: Reader mode overlays the browser while an article is
+            // open (it has its own BackHandler that closes it).
+            val article = state.readerArticle
+            if (article != null) {
+                ReaderScreen(
+                    article = article,
+                    onClose = { state.readerArticle = null; state.readerUrl = null },
+                    initialTextSize = state.settings.readerTextSize,
+                    onTextSizeChange = { state.settings.readerTextSize = it }
+                )
+            }
+
+            // W4: per-site settings sheet. previousSettings is the state
+            // when the sheet OPENED (set by the menu action) — the sheet
+            // shows its reload note once JS/desktop changed since then,
+            // and every reload-needing change re-arms the debounced
+            // reload (300 ms after the last change). "Reload page" stays
+            // manual-only.
+            if (state.siteSettingsOpen) {
+                val sheetUrl = state.currentTab?.url ?: ""
+                val sheetHost = UrlUtils.extractHost(sheetUrl) ?: ""
+                val sheetCurrent = state.perSiteSettingsFor(sheetHost)
+                val sheetPrevious = state.siteSettingsPrevious ?: sheetCurrent
+                SiteSettingsSheet(
+                    host = sheetHost,
+                    settings = sheetCurrent,
+                    onSettingsChange = { next ->
+                        state.applyPerSiteSettings(next)
+                        if (next.needsReloadAfter(sheetPrevious)) {
+                            state.reloadAfterSiteChangeDebounced(sheetHost)
+                        }
+                    },
+                    onDismiss = {
+                        // M6: a reload scheduled by the last toggle must
+                        // not fire after the sheet is gone.
+                        state.cancelPendingSiteReload()
+                        state.siteSettingsOpen = false
+                        state.siteSettingsPrevious = null
+                    },
+                    onReloadPage = { state.reloadCurrent() },
+                    previousSettings = sheetPrevious,
+                    pageUrl = sheetUrl
+                )
             }
 
             // Status toast (auto-clears after 3s).
@@ -105,7 +186,14 @@ fun NovaBrowserApp(
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
                     Box(
                         Modifier.padding(bottom = 140.dp)
-                            .background(Color(0xFF1B1F38), RoundedCornerShape(20.dp))
+                            .background(
+                                MaterialTheme.colorScheme.surfaceContainerHigh,
+                                RoundedCornerShape(20.dp)
+                            )
+                            .border(
+                                1.dp, MaterialTheme.colorScheme.outline,
+                                RoundedCornerShape(20.dp)
+                            )
                             .padding(horizontal = 16.dp, vertical = 10.dp)
                     ) {
                         Text(status, color = Color.White)
@@ -118,6 +206,7 @@ fun NovaBrowserApp(
             if (tab?.sslHandler != null) {
                 SslDialog(tab)
             }
+        }
         }
     }
 }
@@ -159,7 +248,7 @@ fun BrowserContent(state: BrowserState, onOpenPrivateTab: () -> Unit) {
 
     Scaffold(
         bottomBar = { BrowserBottomBar(state, tab, onOpenPrivateTab) },
-        containerColor = MaterialTheme.colorScheme.background
+        containerColor = Color.Transparent
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             if (tab?.isLoading == true) {
@@ -224,6 +313,9 @@ fun BrowserBottomBar(state: BrowserState, tab: Tab?, onOpenPrivateTab: () -> Uni
     val context = LocalContext.current
     var addressText by remember { mutableStateOf("") }
     val focusRequester = remember { FocusRequester() }
+    // Glass Premium (v2.1): the bottom bar is translucent glass with a 1dp
+    // top hairline, so web content shows through slightly beneath it.
+    val hairline = MaterialTheme.colorScheme.outline
     LaunchedEffect(state.addressEditing) {
         if (state.addressEditing) focusRequester.requestFocus()
     }
@@ -237,7 +329,30 @@ fun BrowserBottomBar(state: BrowserState, tab: Tab?, onOpenPrivateTab: () -> Uni
         context.startActivity(Intent.createChooser(intent, "Share page"))
     }
 
-    Column(Modifier.background(MaterialTheme.colorScheme.surface)) {
+    Column(
+        Modifier.background(MaterialTheme.colorScheme.surface)
+            .drawBehind {
+                val stroke = 1.dp.toPx()
+                drawLine(
+                    hairline, Offset(0f, stroke / 2f),
+                    Offset(size.width, stroke / 2f), strokeWidth = stroke
+                )
+            }
+    ) {
+        // W4: address-bar suggestions appear ABOVE the bottom bar — the
+        // bar sits at the screen bottom, so a dropdown below the field
+        // would be off-screen. Shown only while the user is editing.
+        val suggestions = state.addressSuggestions
+        if (state.addressEditing && suggestions.isNotEmpty()) {
+            AddressSuggestionsDropdown(
+                suggestions = suggestions,
+                onSuggestionClick = { suggestion ->
+                    state.clearSuggestions()
+                    state.addressEditing = false
+                    state.loadInput(suggestion.url ?: suggestion.text)
+                }
+            )
+        }
         Row(
             Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 8.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -258,8 +373,30 @@ fun BrowserBottomBar(state: BrowserState, tab: Tab?, onOpenPrivateTab: () -> Uni
                 if (state.addressEditing) {
                     TextField(
                         value = addressText,
-                        onValueChange = { addressText = it },
-                        modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
+                        onValueChange = {
+                            addressText = it
+                            // W4: debounced suggestions (history/bookmarks
+                            // + the active engine's network suggestions).
+                            // The engine runs on a worker thread and posts
+                            // results to the main thread; in private mode
+                            // it returns nothing (no keystroke leaves the
+                            // device).
+                            if (it.isBlank()) {
+                                state.clearSuggestions()
+                            } else {
+                                state.suggestionEngine.suggestDebounced(
+                                    query = it,
+                                    engineId = state.settings.searchEngine.id,
+                                    includeNetwork = state.settings.searchSuggestions,
+                                    privateMode = tab?.incognito == true,
+                                    delayMs = 300
+                                ) { results -> state.postSuggestions(results) }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().focusRequester(focusRequester)
+                            .onFocusChanged { focus ->
+                                if (!focus.isFocused) state.clearSuggestions()
+                            },
                         placeholder = { Text("Search or enter address") },
                         singleLine = true,
                         colors = TextFieldDefaults.colors(
@@ -274,6 +411,7 @@ fun BrowserBottomBar(state: BrowserState, tab: Tab?, onOpenPrivateTab: () -> Uni
                             if (addressText.isNotBlank()) {
                                 state.loadInput(addressText)
                             }
+                            state.clearSuggestions()
                             state.addressEditing = false
                         })
                     )
@@ -304,19 +442,24 @@ fun BrowserBottomBar(state: BrowserState, tab: Tab?, onOpenPrivateTab: () -> Uni
                     withContext(Dispatchers.IO) { state.isBookmarked(it) }
                 } ?: false
             }
-            IconButton(onClick = {
-                tab?.let {
-                    val on = state.toggleBookmark(it)
-                    bookmarked = on
-                    state.status(if (on) "Bookmarked" else "Bookmark removed")
+            // P-2 (W6 baseline): the bookmark star is hidden in private
+            // mode — a private tab must never write the shared bookmarks
+            // table (toggleBookmark guards it too).
+            if (!state.privateMode) {
+                IconButton(onClick = {
+                    tab?.let {
+                        val on = state.toggleBookmark(it)
+                        bookmarked = on
+                        state.status(if (on) "Bookmarked" else "Bookmark removed")
+                    }
+                }) {
+                    Icon(
+                        if (bookmarked) Icons.Filled.Star else Icons.Filled.StarBorder,
+                        "Bookmark",
+                        tint = if (bookmarked) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
-            }) {
-                Icon(
-                    if (bookmarked) Icons.Filled.Star else Icons.Filled.StarBorder,
-                    "Bookmark",
-                    tint = if (bookmarked) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
             Box {
                 IconButton(onClick = { state.menuExpanded = true }) {
@@ -342,10 +485,23 @@ fun BrowserBottomBar(state: BrowserState, tab: Tab?, onOpenPrivateTab: () -> Uni
                     )
                     DropdownMenuItem(
                         text = { Text("Desktop site") },
+                        // L1: on a blank/home tab there is no host to
+                        // persist per-site, so the toggle would revert
+                        // on the next navigation — disable it until the
+                        // tab has a page (same pattern as Find in page).
+                        enabled = tab?.url?.isNotBlank() == true,
                         onClick = {
                             state.menuExpanded = false
                             tab?.let {
                                 it.desktopMode = !it.desktopMode
+                                // W4: the menu toggle is per-tab, but the
+                                // per-site set is what onPageStarted
+                                // applies on the next navigation — keep
+                                // them in sync or the toggle reverts on
+                                // reload.
+                                UrlUtils.extractHost(it.url)?.let { host ->
+                                    state.settings.setDesktopModeFor(host, it.desktopMode)
+                                }
                                 it.webView?.let { wv ->
                                     NovaWebView.applyDesktopMode(wv, it)
                                     wv.reload()
@@ -359,6 +515,42 @@ fun BrowserBottomBar(state: BrowserState, tab: Tab?, onOpenPrivateTab: () -> Uni
                         trailingIcon = {
                             if (tab?.desktopMode == true) Icon(Icons.Filled.Check, null)
                         }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Reader mode") },
+                        // No readable article → the extractor reports it;
+                        // the item stays enabled so the user can try on
+                        // any page with content.
+                        enabled = tab?.url?.isNotBlank() == true,
+                        onClick = {
+                            state.menuExpanded = false
+                            val webView = tab?.webView
+                            val url = tab?.url
+                            if (webView != null && url != null) {
+                                ReaderRunner.extractArticle(webView) { article ->
+                                    if (article == null) {
+                                        state.status("No readable article on this page")
+                                    } else {
+                                        state.readerArticle = article
+                                        state.readerUrl = url
+                                    }
+                                }
+                            }
+                        },
+                        leadingIcon = { Icon(Icons.Filled.Article, null) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Site settings") },
+                        // Per-site settings only exist for real web pages.
+                        enabled = tab?.url?.let { isSupportedUrl(it) } == true,
+                        onClick = {
+                            state.menuExpanded = false
+                            val url = tab?.url ?: return@DropdownMenuItem
+                            val host = UrlUtils.extractHost(url) ?: return@DropdownMenuItem
+                            state.siteSettingsPrevious = state.perSiteSettingsFor(host)
+                            state.siteSettingsOpen = true
+                        },
+                        leadingIcon = { Icon(Icons.Filled.Tune, null) }
                     )
                     DropdownMenuItem(
                         text = { Text("Find in page") },
@@ -404,6 +596,31 @@ fun BrowserBottomBar(state: BrowserState, tab: Tab?, onOpenPrivateTab: () -> Uni
                         onClick = { state.menuExpanded = false; state.screen = BrowserScreen.SETTINGS },
                         leadingIcon = { Icon(Icons.Filled.Settings, null) }
                     )
+                    if (!state.privateMode) {
+                        DropdownMenuItem(
+                            text = { Text("Extensions") },
+                            onClick = { state.menuExpanded = false; state.screen = BrowserScreen.EXTENSIONS },
+                            leadingIcon = { Icon(Icons.Filled.Extension, null) }
+                        )
+                    }
+                    if (!state.privateMode) {
+                        DropdownMenuItem(
+                            text = { Text("DevTools") },
+                            onClick = {
+                                state.menuExpanded = false
+                                state.currentTab?.let { DevToolsHub.bindToTab(it.id) }
+                                state.screen = BrowserScreen.DEVTOOLS
+                            },
+                            leadingIcon = { Icon(Icons.Filled.Code, null) },
+                            enabled = state.settings.devMode
+                        )
+                        DropdownMenuItem(
+                            text = { Text("HTTP Client") },
+                            onClick = { state.menuExpanded = false; state.screen = BrowserScreen.HTTP_CLIENT },
+                            leadingIcon = { Icon(Icons.Filled.Send, null) },
+                            enabled = state.settings.devMode
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text("Error log") },
                         onClick = { state.menuExpanded = false; state.screen = BrowserScreen.ERROR_LOG },
@@ -529,7 +746,7 @@ fun ShieldSheet(state: BrowserState, tab: Tab?) {
 
 @Composable
 private fun StatCard(label: String, value: String, modifier: Modifier = Modifier) {
-    Card(modifier) {
+    GlassCard(modifier) {
         Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
                 value,
@@ -545,8 +762,16 @@ private fun StatCard(label: String, value: String, modifier: Modifier = Modifier
 /** Find-in-page bar above the bottom bar. */
 @Composable
 fun FindBar(tab: Tab) {
+    val hairline = MaterialTheme.colorScheme.outline
     Row(
         Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)
+            .drawBehind {
+                val stroke = 1.dp.toPx()
+                drawLine(
+                    hairline, Offset(0f, stroke / 2f),
+                    Offset(size.width, stroke / 2f), strokeWidth = stroke
+                )
+            }
             .padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

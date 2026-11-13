@@ -16,7 +16,7 @@ data class Bookmark(
     val createdAt: Long, val pinned: Boolean
 )
 
-data class SavedTab(val url: String, val title: String, val position: Int)
+data class SavedTab(val url: String, val title: String, val position: Int, val groupId: Long? = null)
 
 data class DownloadRow(
     val id: Long, val dmId: Long, val url: String, val fileName: String,
@@ -30,7 +30,7 @@ data class DownloadRow(
  * and returns an empty/false result instead of crashing the browser.
  */
 class BrowserDb(context: Context) :
-    SQLiteOpenHelper(context, "nova_browser.db", null, 1) {
+    SQLiteOpenHelper(context, "nova_browser.db", null, 2) {
 
     private val appContext: Context = context.applicationContext
 
@@ -57,7 +57,8 @@ class BrowserDb(context: Context) :
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 url TEXT NOT NULL,
                 title TEXT NOT NULL DEFAULT '',
-                position INTEGER NOT NULL)"""
+                position INTEGER NOT NULL,
+                group_id INTEGER NOT NULL DEFAULT 0)"""
         )
         db.execSQL(
             """CREATE TABLE downloads (
@@ -71,7 +72,10 @@ class BrowserDb(context: Context) :
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // v1.0: no upgrades yet.
+        // v2: tab groups survive a kill — group_id on the tabs table.
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE tabs ADD COLUMN group_id INTEGER NOT NULL DEFAULT 0")
+        }
     }
 
     // ---- History ----
@@ -270,6 +274,7 @@ class BrowserDb(context: Context) :
                         put("url", tab.url)
                         put("title", tab.title)
                         put("position", index)
+                        put("group_id", tab.groupId ?: 0L)
                     }
                     db.insert("tabs", null, values)
                 }
@@ -289,8 +294,14 @@ class BrowserDb(context: Context) :
                 val iUrl = c.getColumnIndexOrThrow("url")
                 val iTitle = c.getColumnIndexOrThrow("title")
                 val iPos = c.getColumnIndexOrThrow("position")
+                // group_id exists from v2; -1 on a pre-upgrade DB is
+                // treated as ungrouped (onUpgrade normally adds it first).
+                val iGroup = c.getColumnIndex("group_id")
                 while (c.moveToNext()) {
-                    out.add(SavedTab(c.getString(iUrl), c.getString(iTitle), c.getInt(iPos)))
+                    val groupId = if (iGroup >= 0) {
+                        c.getLong(iGroup).takeIf { it != 0L }
+                    } else null
+                    out.add(SavedTab(c.getString(iUrl), c.getString(iTitle), c.getInt(iPos), groupId))
                 }
             }
             out

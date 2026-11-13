@@ -64,11 +64,23 @@ object Downloads {
                 .setNotificationVisibility(
                     DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
                 )
-                .setDestinationInExternalPublicDir(
-                    Environment.DIRECTORY_DOWNLOADS, "$SUBDIR/$fileName"
-                )
                 .setAllowedOverMetered(true)
                 .setAllowedOverRoaming(true)
+            if (recordToDb) {
+                request.setDestinationInExternalPublicDir(
+                    Environment.DIRECTORY_DOWNLOADS, "$SUBDIR/$fileName"
+                )
+            } else {
+                // P-1 (W6 baseline): a private download must NEVER land in
+                // public Downloads — the file would survive the session
+                // wipe (recordToDb=false only skipped the DB row). The
+                // app-private external files dir has the same
+                // DownloadManager reliability and is deleted with the
+                // session (PrivateActivity.onDestroy).
+                request.setDestinationInExternalFilesDir(
+                    context, Environment.DIRECTORY_DOWNLOADS, "$SUBDIR/$fileName"
+                )
+            }
             if (userAgent != null) request.addRequestHeader("User-Agent", userAgent)
             if (cookie != null) request.addRequestHeader("Cookie", cookie)
             val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
@@ -151,7 +163,11 @@ object Downloads {
         }
     }
 
-    /** Cancel the system download, delete the file and drop the DB row. */
+    /** Cancel the system download, delete the file and drop the DB row.
+     *  The manual file delete is a backstop (DownloadManager.remove
+     *  deletes the file itself) and covers BOTH destinations — the
+     *  public path (normal) and the app-private external-files path
+     *  (private, P-1). */
     fun remove(context: Context, db: BrowserDb, item: DownloadItem): Boolean {
         return try {
             val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
@@ -161,6 +177,12 @@ object Downloads {
                 "$SUBDIR/${item.row.fileName}"
             )
             if (file.exists()) file.delete()
+            try {
+                context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.let { dir ->
+                    val privateFile = File(dir, "$SUBDIR/${item.row.fileName}")
+                    if (privateFile.exists()) privateFile.delete()
+                }
+            } catch (_: Exception) { }
             db.removeDownload(item.row.dmId)
             true
         } catch (e: Exception) {
@@ -188,17 +210,27 @@ object Downloads {
         }
     }
 
-    /** Share a finished download through the FileProvider. */
+    /** Share a finished download. The Uri comes from DownloadManager
+     *  itself (P-1) — getUriForDownloadedFile works for BOTH
+     *  destinations (public Downloads and the app-private external
+     *  files dir used for private downloads), where the old public-path
+     *  File would 404 for a private file. Falls back to the public-path
+     *  FileProvider Uri when the DM entry is gone but the file remains. */
     fun share(context: Context, item: DownloadItem): Boolean {
         return try {
-            val file = File(
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                "$SUBDIR/${item.row.fileName}"
-            )
-            if (!file.exists()) return false
-            val uri = FileProvider.getUriForFile(
-                context, "com.nova.browser.provider", file
-            )
+            val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            val uri = try {
+                dm.getUriForDownloadedFile(item.row.dmId)
+            } catch (_: Exception) {
+                null
+            } ?: run {
+                val file = File(
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                    "$SUBDIR/${item.row.fileName}"
+                )
+                if (!file.exists()) return false
+                FileProvider.getUriForFile(context, "com.nova.browser.provider", file)
+            }
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = item.row.mimeType ?: "*/*"
                 putExtra(Intent.EXTRA_STREAM, uri)

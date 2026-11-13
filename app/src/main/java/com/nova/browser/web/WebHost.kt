@@ -17,10 +17,13 @@ import android.webkit.WebView
  * apps must never come back, and WebView callbacks predate that API).
  */
 interface WebHost {
-    /** A page wants to download a file. */
+    /** A page wants to download a file. [tab] is the tab the download
+     *  came from — the custom downloader (W4) clears its
+     *  hasActiveTransfer flag when the download ends, so the tab can
+     *  suspend again. */
     fun onDownloadStart(
         url: String, userAgent: String?, contentDisposition: String?,
-        mimeType: String?, contentLength: Long
+        mimeType: String?, contentLength: Long, tab: com.nova.browser.data.Tab
     )
 
     /** A page opened a file picker (<input type=file>). The activity must

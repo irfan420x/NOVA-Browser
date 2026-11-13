@@ -1,5 +1,6 @@
 package com.nova.browser.ui
 
+import android.webkit.WebView
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -14,6 +15,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.nova.browser.data.SearchEngine
+import com.nova.browser.devtools.DevToolsHub
+import androidx.compose.ui.graphics.Color
 
 /**
  * Settings: search engine, ad blocker, HTTPS-only, desktop mode, text size,
@@ -31,9 +34,14 @@ fun SettingsScreen(
     var adBlock by remember { mutableStateOf(settings.adBlockEnabled) }
     var ytSkipper by remember { mutableStateOf(settings.youtubeAdSkipper) }
     var httpsOnly by remember { mutableStateOf(settings.httpsOnly) }
+    var suspendTabs by remember { mutableStateOf(settings.suspendBackgroundTabs) }
+    var devMode by remember { mutableStateOf(settings.devMode) }
+    var webDebug by remember { mutableStateOf(settings.webContentsDebugging) }
     var desktopDefault by remember { mutableStateOf(settings.desktopModeDefault) }
     var textZoom by remember { mutableStateOf(settings.textZoom.toFloat()) }
     var engine by remember { mutableStateOf(settings.searchEngine) }
+    var searchSuggestions by remember { mutableStateOf(settings.searchSuggestions) }
+    var clearOnExit by remember { mutableStateOf(settings.clearOnExit) }
     var customRules by remember { mutableStateOf(settings.customFilterRules) }
     var rulesExpanded by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
@@ -65,8 +73,9 @@ fun SettingsScreen(
     }
 
     Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
-            TopAppBar(
+            GlassTopAppBar(
                 title = { Text("Settings") },
                 navigationIcon = {
                     IconButton(onClick = { state.screen = BrowserScreen.BROWSER }) {
@@ -103,6 +112,28 @@ fun SettingsScreen(
                         Text(candidate.label)
                     }
                 }
+                // W4: address-bar search suggestions. Exact wording from
+                // the hook spec — the user must know keystrokes leave the
+                // device while typing. L3: Bing has no verified
+                // suggestion endpoint (history-only) — say so instead of
+                // naming engines that do not apply. Hidden in private
+                // mode: suggestions never fire there, so the toggle
+                // would write a throwaway pref and promise nothing.
+                if (!state.privateMode) {
+                    SettingsSwitch(
+                        title = "Search suggestions",
+                        subtitle = if (engine == SearchEngine.BING) {
+                            "Bing has no verified suggestion endpoint — you get history-only suggestions. For the other engines, keystrokes are sent to the active search engine as you type."
+                        } else {
+                            "As you type, keystrokes are sent to the active search engine (Google / DuckDuckGo / Brave) to fetch suggestions. Turn off for history-only suggestions."
+                        },
+                        checked = searchSuggestions,
+                        onChange = {
+                            searchSuggestions = it
+                            settings.searchSuggestions = it
+                        }
+                    )
+                }
             }
 
             SettingsSection("Privacy") {
@@ -134,6 +165,15 @@ fun SettingsScreen(
                     }
                 )
                 SettingsSwitch(
+                    title = "Suspend background tabs",
+                    subtitle = "Free memory by unloading tabs idle for 10 minutes — they reload when you switch back. Tabs with a running download are never unloaded (a paused download doesn't block it).",
+                    checked = suspendTabs,
+                    onChange = {
+                        suspendTabs = it
+                        settings.suspendBackgroundTabs = it
+                    }
+                )
+                SettingsSwitch(
                     title = "Desktop mode by default",
                     subtitle = "New tabs open as a desktop browser",
                     checked = desktopDefault,
@@ -142,6 +182,22 @@ fun SettingsScreen(
                         settings.desktopModeDefault = it
                     }
                 )
+                // W4: clear browsing data on exit. Exact wording from the
+                // hook spec — the kill limitation must be visible, not
+                // buried. L2: hidden in private mode — it writes the
+                // throwaway private prefs and never runs there (private
+                // sessions already wipe on close).
+                if (!state.privateMode) {
+                    SettingsSwitch(
+                        title = "Clear browsing data on exit",
+                        subtitle = "Clears history, cookies and cache when the browser closes cleanly. Does not run if the app is swiped away or killed.",
+                        checked = clearOnExit,
+                        onChange = {
+                            clearOnExit = it
+                            settings.clearOnExit = it
+                        }
+                    )
+                }
             }
 
             SettingsSection("Appearance") {
@@ -168,7 +224,7 @@ fun SettingsScreen(
                 }
                 SettingsSwitch(
                     title = "Dark theme",
-                    subtitle = "Nebula Dark Premium (light theme available)",
+                    subtitle = "Glass Premium (light theme available)",
                     checked = darkTheme,
                     onChange = {
                         darkTheme = it
@@ -232,6 +288,44 @@ fun SettingsScreen(
                 }
             }
 
+            if (!state.privateMode) {
+                SettingsSection("Developer") {
+                    SettingsSwitch(
+                        title = "Dev Mode",
+                        subtitle = "Show DevTools and the HTTP Client; record console and network logs for the current tab",
+                        checked = devMode,
+                        onChange = {
+                            devMode = it
+                            settings.devMode = it
+                            DevToolsHub.setDevMode(it)
+                            if (it) {
+                                state.currentTab?.let { tab -> DevToolsHub.bindToTab(tab.id) }
+                            }
+                            WebView.setWebContentsDebuggingEnabled(
+                                it && settings.webContentsDebugging
+                            )
+                        }
+                    )
+                    SettingsSwitch(
+                        title = "USB remote debugging",
+                        subtitle = "Allow chrome://inspect from a computer. Only with Dev Mode on — never enabled by default.",
+                        checked = webDebug,
+                        onChange = {
+                            webDebug = it
+                            settings.webContentsDebugging = it
+                            WebView.setWebContentsDebuggingEnabled(
+                                settings.devMode && it
+                            )
+                        }
+                    )
+                    Text(
+                        "DevTools records console messages and network requests for the current tab only, in memory only. USB debugging exposes the page to any computer connected over USB — only turn it on when you are debugging.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
             SettingsSection("Browser") {
                 if (isDefault) {
                     Text(
@@ -245,6 +339,15 @@ fun SettingsScreen(
                     }) { Text("Set as default browser") }
                 }
                 Spacer(Modifier.height(12.dp))
+                // L2: the menu hides Extensions in private mode — the
+                // Settings row must too (the screen itself refuses in
+                // private, but the row should not be offered at all).
+                if (!state.privateMode) {
+                    SettingsAction("Extensions", "Userscripts and built-in extensions") {
+                        state.screen = BrowserScreen.EXTENSIONS
+                    }
+                    Spacer(Modifier.height(12.dp))
+                }
                 SettingsAction("Error log", "Crashes and failed operations, with the exact error") {
                     state.screen = BrowserScreen.ERROR_LOG
                 }
@@ -300,7 +403,7 @@ private fun SettingsSection(title: String, content: @Composable ColumnScope.() -
             fontWeight = FontWeight.Bold
         )
         Spacer(Modifier.height(8.dp))
-        Card(Modifier.fillMaxWidth()) {
+        GlassCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 content()
             }

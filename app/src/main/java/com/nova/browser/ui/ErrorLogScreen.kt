@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.nova.browser.data.ErrorLog
+import androidx.compose.ui.graphics.Color
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -24,8 +25,9 @@ fun ErrorLogScreen(onBack: () -> Unit) {
     var entries by remember { mutableStateOf(ErrorLog.read(context)) }
     var status by remember { mutableStateOf("") }
     Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
-            TopAppBar(
+            GlassTopAppBar(
                 title = { Text("Error log") },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.Filled.ArrowBack, "Back") } },
                 actions = {
@@ -62,7 +64,7 @@ fun ErrorLogScreen(onBack: () -> Unit) {
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     itemsIndexed(entries, key = { index, _ -> index }) { _, e ->
-                        Card(
+                        GlassCard(
                             Modifier.fillMaxWidth(),
                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                         ) {

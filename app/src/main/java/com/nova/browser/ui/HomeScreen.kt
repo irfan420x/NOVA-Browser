@@ -82,7 +82,7 @@ fun HomeScreen(state: BrowserState) {
 
         if (state.privateMode) {
             item {
-                Card(
+                GlassCard(
                     Modifier.fillMaxWidth(),
                     border = androidx.compose.foundation.BorderStroke(
                         1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)

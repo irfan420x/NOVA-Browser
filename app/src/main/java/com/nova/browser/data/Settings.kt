@@ -54,6 +54,30 @@ class Settings(context: Context, private: Boolean = false) {
         get() = prefs.getBoolean("youtube_ad_skipper", true)
         set(v) = prefs.edit().putBoolean("youtube_ad_skipper", v).apply()
 
+    /** Dev Mode: shows the DevTools / HTTP Client menu entries and enables
+     *  DevTools recording (console + network logs). Off by default.
+     *  Deliberately NOT copied to a private session (see copySafeFrom):
+     *  DevTools must never record in :incognito. */
+    var devMode: Boolean
+        get() = prefs.getBoolean("dev_mode", false)
+        set(v) = prefs.edit().putBoolean("dev_mode", v).apply()
+
+    /** USB remote debugging (chrome://inspect). OFF by default, only
+     *  meaningful when Dev Mode is on, and only with the user's explicit
+     *  consent (Settings shows a warning). Never on by default, and never
+     *  copied to a private session. */
+    var webContentsDebugging: Boolean
+        get() = prefs.getBoolean("web_contents_debugging", false)
+        set(v) = prefs.edit().putBoolean("web_contents_debugging", v).apply()
+
+    /** Suspend background tabs: free memory by unloading tabs idle for
+     *  10 minutes (or on memory pressure) — they reload when you switch
+     *  back. Form results and tabs with a download running are never
+     *  unloaded (W1/W1-1). */
+    var suspendBackgroundTabs: Boolean
+        get() = prefs.getBoolean("suspend_background_tabs", true)
+        set(v) = prefs.edit().putBoolean("suspend_background_tabs", v).apply()
+
     /** Upgrade http to https, except localhost/LAN hosts. */
     var httpsOnly: Boolean
         get() = prefs.getBoolean("https_only", true)
@@ -68,6 +92,67 @@ class Settings(context: Context, private: Boolean = false) {
     var textZoom: Int
         get() = prefs.getInt("text_zoom", 100).coerceIn(50, 200)
         set(v) = prefs.edit().putInt("text_zoom", v.coerceIn(50, 200)).apply()
+
+    /** Hosts where the user turned JavaScript off (per-site toggle,
+     *  W4). Mirrors [adBlockOffHosts]: the set reveals visited sites,
+     *  so it is never copied to a private session. */
+    var jsOffHosts: Set<String>
+        get() = prefs.getStringSet("js_off_hosts", emptySet()) ?: emptySet()
+        set(v) = prefs.edit().putStringSet("js_off_hosts", v.toSet()).apply()
+
+    fun isJsOffFor(host: String?): Boolean {
+        if (host == null) return false
+        val h = host.lowercase()
+        return jsOffHosts.any { off -> h == off || h.endsWith(".$off") }
+    }
+
+    fun setJsOffFor(host: String, off: Boolean) {
+        val set = jsOffHosts.toMutableSet()
+        if (off) set.add(host.lowercase()) else set.remove(host.lowercase())
+        jsOffHosts = set
+    }
+
+    /** Hosts where the user turned desktop mode on (per-site toggle,
+     *  W4). Same privacy rule as [jsOffHosts]. */
+    var desktopModeHosts: Set<String>
+        get() = prefs.getStringSet("desktop_mode_hosts", emptySet()) ?: emptySet()
+        set(v) = prefs.edit().putStringSet("desktop_mode_hosts", v.toSet()).apply()
+
+    fun isDesktopModeFor(host: String?): Boolean {
+        if (host == null) return false
+        val h = host.lowercase()
+        return desktopModeHosts.any { on -> h == on || h.endsWith(".$on") }
+    }
+
+    fun setDesktopModeFor(host: String, on: Boolean) {
+        val set = desktopModeHosts.toMutableSet()
+        if (on) set.add(host.lowercase()) else set.remove(host.lowercase())
+        desktopModeHosts = set
+    }
+
+    /** Search suggestions in the address bar (W4): as you type,
+     *  keystrokes are sent to the active search engine to fetch
+     *  suggestions. Off = history/bookmark suggestions only. Default
+     *  ON. A display/search pref — safe to copy to a private session
+     *  (the engine itself forces privateMode there). */
+    var searchSuggestions: Boolean
+        get() = prefs.getBoolean("search_suggestions", true)
+        set(v) = prefs.edit().putBoolean("search_suggestions", v).apply()
+
+    /** Reader-mode text size, percent (50..200). Persisted across
+     *  articles (W4). Display pref — safe to copy to a private session. */
+    var readerTextSize: Int
+        get() = prefs.getInt("reader_text_size", 100).coerceIn(50, 200)
+        set(v) = prefs.edit().putInt("reader_text_size", v.coerceIn(50, 200)).apply()
+
+    /** Clear browsing data on exit (W4): history, cookies and cache are
+     *  wiped when the browser closes cleanly. Does NOT run when the app
+     *  is swiped away or killed — only a clean finish. Default OFF.
+     *  Not copied to a private session: private sessions already wipe
+     *  on close, unconditionally. */
+    var clearOnExit: Boolean
+        get() = prefs.getBoolean("clear_on_exit", false)
+        set(v) = prefs.edit().putBoolean("clear_on_exit", v).apply()
 
     /** Hosts where the user turned the ad blocker off (per-site toggle). */
     var adBlockOffHosts: Set<String>
@@ -124,17 +209,22 @@ class Settings(context: Context, private: Boolean = false) {
 
     /** Copies only the prefs that are safe to share with a private
      *  session — display and search choices, not per-site history.
-     *  Deliberately NOT copied: adBlockOffHosts and httpsExceptionHosts
-     *  (they reveal which sites were visited) and shortcutsSeeded. */
+     *  Deliberately NOT copied: adBlockOffHosts, httpsExceptionHosts,
+     *  jsOffHosts and desktopModeHosts (they reveal which sites were
+     *  visited), clearOnExit (private sessions wipe on close anyway),
+     *  and shortcutsSeeded. */
     fun copySafeFrom(other: Settings) {
         darkTheme = other.darkTheme
         searchEngine = other.searchEngine
         adBlockEnabled = other.adBlockEnabled
         youtubeAdSkipper = other.youtubeAdSkipper
+        suspendBackgroundTabs = other.suspendBackgroundTabs
         httpsOnly = other.httpsOnly
         desktopModeDefault = other.desktopModeDefault
         textZoom = other.textZoom
         customFilterRules = other.customFilterRules
+        searchSuggestions = other.searchSuggestions
+        readerTextSize = other.readerTextSize
     }
 
     /** Drops the per-site choices of a private session. Called at the
@@ -144,5 +234,7 @@ class Settings(context: Context, private: Boolean = false) {
     fun clearPrivateSessionData() {
         adBlockOffHosts = emptySet()
         httpsExceptionHosts = emptySet()
+        jsOffHosts = emptySet()
+        desktopModeHosts = emptySet()
     }
 }

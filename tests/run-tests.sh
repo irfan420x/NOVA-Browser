@@ -22,9 +22,26 @@ SRC="$ROOT/app/src/main/java"
     "$SRC/com/nova/browser/adblock/AdBlockEngine.kt" \
     "$SRC/com/nova/browser/web/UrlUtils.kt" \
     "$SRC/com/nova/browser/web/CosmeticFilter.kt" \
+    "$SRC/com/nova/browser/data/TabGroup.kt" \
+    "$SRC/com/nova/browser/extensions/Userscript.kt" \
+    "$SRC/com/nova/browser/extensions/ExtensionRuntime.kt" \
+    "$SRC/com/nova/browser/web/Suggestions.kt" \
+    "$SRC/com/nova/browser/reader/ReaderExtractor.kt" \
+    "$SRC/com/nova/browser/data/Downloader.kt" \
+    "$SRC/com/nova/browser/devtools/JsonPretty.kt" \
+    "$SRC/com/nova/browser/devtools/CurlBuilder.kt" \
+    "$SRC/com/nova/browser/devtools/NetworkLog.kt" \
+    "$SRC/com/nova/browser/devtools/ConsoleLog.kt" \
+    "$SRC/com/nova/browser/devtools/ElementInspector.kt" \
+    "$SRC/com/nova/browser/devtools/HttpClientEngine.kt" \
+    "$SRC/com/nova/browser/devtools/DevToolsHub.kt" \
     "$ROOT/tests/AdBlockEngineTest.kt" \
     "$ROOT/tests/UrlUtilsTest.kt" \
-    "$ROOT/tests/CosmeticFilterTest.kt"
+    "$ROOT/tests/CosmeticFilterTest.kt" \
+    "$ROOT/tests/TabGroupsTest.kt" \
+    "$ROOT/tests/ExtensionsTest.kt" \
+    "$ROOT/tests/ReaderSuggestionsTest.kt" \
+    "$ROOT/tests/DevToolsTest.kt"
 
 # kotlin-stdlib for the test run (the sources use only the stdlib).
 STDLIB="$FILES_ROOT/tools/kotlinc/lib/kotlin-stdlib.jar"
@@ -34,7 +51,11 @@ FAIL=0
 for main in \
     com.nova.browser.adblock.AdBlockEngineTestKt \
     com.nova.browser.web.UrlUtilsTestKt \
-    com.nova.browser.web.CosmeticFilterTestKt; do
+    com.nova.browser.web.CosmeticFilterTestKt \
+    com.nova.browser.data.TabGroupsTestKt \
+    com.nova.browser.extensions.ExtensionsTestKt \
+    com.nova.browser.web.ReaderSuggestionsTestKt \
+    com.nova.browser.devtools.DevToolsTestKt; do
     java -cp "$OUT:$STDLIB" "$main" || FAIL=1
 done
 if [ "$FAIL" -eq 0 ]; then

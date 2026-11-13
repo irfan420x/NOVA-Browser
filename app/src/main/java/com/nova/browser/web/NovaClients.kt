@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Message
 import android.webkit.CookieManager
+import android.webkit.ConsoleMessage
 import android.webkit.GeolocationPermissions
 import android.webkit.PermissionRequest
 import android.webkit.SslErrorHandler
@@ -17,7 +18,11 @@ import android.webkit.WebViewClient
 import com.nova.browser.adblock.AdBlockEngine
 import com.nova.browser.adblock.BlockResult
 import com.nova.browser.data.ErrorLog
+import com.nova.browser.data.ExtensionStore
 import com.nova.browser.data.Tab
+import com.nova.browser.devtools.DevToolsHub
+import com.nova.browser.extensions.ExtensionRuntime
+import com.nova.browser.reader.ReaderRunner
 import com.nova.browser.ui.BrowserState
 import java.io.ByteArrayInputStream
 
@@ -34,6 +39,18 @@ object NovaWebView {
     fun configure(webView: WebView, tab: Tab, state: BrowserState, host: WebHost) {
         val s = webView.settings
         s.javaScriptEnabled = true
+        // M3: per-site settings must apply BEFORE the first load —
+        // onPageStarted is too late (the main-frame request already went
+        // out with the old UA, so a stored per-site desktop mode loaded
+        // the mobile layout on first visit). The tab starts with the
+        // stored per-site values; applyDesktopMode below then uses them.
+        // (A blank tab has no host — defaults stay until it navigates.)
+        val firstHost = UrlUtils.extractHost(tab.url ?: "")
+        if (firstHost != null) {
+            val perSite = state.perSiteSettingsFor(firstHost)
+            s.javaScriptEnabled = perSite.javaScriptEnabled
+            tab.desktopMode = perSite.desktopMode
+        }
         s.domStorageEnabled = true
         s.databaseEnabled = true
         s.useWideViewPort = true
@@ -57,13 +74,21 @@ object NovaWebView {
             // Safe Browsing is not available on every WebView build.
         }
         applyDesktopMode(webView, tab)
-        // Debugging is off in v1.0 (Dev Mode / USB remote debugging is v1.1).
-        WebView.setWebContentsDebuggingEnabled(false)
+        // USB remote debugging (W3-3): OFF unless Dev Mode is on AND the
+        // user explicitly enabled it with the consent warning. This is a
+        // global, app-wide flag — configure() re-applies it for every new
+        // tab, so the Settings toggle handler must also call
+        // WebView.setWebContentsDebuggingEnabled(false) immediately when
+        // it is switched off, not only here.
+        WebView.setWebContentsDebuggingEnabled(
+            state.settings.devMode && state.settings.webContentsDebugging
+        )
 
         webView.webViewClient = NovaWebViewClient(state, host, tab)
         webView.webChromeClient = NovaWebChromeClient(state, host, tab)
         webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, contentLength ->
-            host.onDownloadStart(url, userAgent, contentDisposition, mimeType, contentLength)
+            tab.hasActiveTransfer = true // W1-1: never suspend mid-download
+            host.onDownloadStart(url, userAgent, contentDisposition, mimeType, contentLength, tab)
         }
         webView.setFindListener { activeMatchOrdinal, numberOfMatches, _ ->
             tab.findResult = if (numberOfMatches > 0) {
@@ -159,30 +184,50 @@ class NovaWebViewClient(
         // is thread-safe and runs the block on the main thread. Everything
         // else must come from the tab / state, which the main thread keeps
         // up to date (tab.url is set in onPageStarted).
+        val netT0 = System.nanoTime()
+        // Record every request outcome (allowed, per-site-off, blocked)
+        // and return the response. Background-thread safe: recordNetwork
+        // never touches a WebView.
+        fun finish(blocked: Boolean, kind: String?, response: WebResourceResponse?): WebResourceResponse? {
+            DevToolsHub.recordNetwork(
+                tab.id, request.url.toString(), request.method, blocked, kind,
+                request.isForMainFrame, (System.nanoTime() - netT0) / 1_000_000
+            )
+            return response
+        }
+        // W1-1: mark POST-result tabs — a suspended tab restores as a plain
+        // GET, so POST tabs must never be suspended. The only place a POST
+        // is observable (WebBackForwardList has no POST flag). Runs before
+        // any early return, so a POST main-frame request is always marked.
+        if (request.isForMainFrame) {
+            val isPost = request.method == "POST"
+            view.post { tab.wasPost = isPost }
+        }
         // Ad-block layer 1 — network filter. Only GET sub-resource requests
         // over http(s); the main frame is never blocked, and POST bodies
         // are never swallowed.
-        if (!state.settings.adBlockEnabled) return null
-        if (request.method != "GET" || request.isForMainFrame) return null
+        if (!state.settings.adBlockEnabled) return finish(false, null, null)
+        if (request.method != "GET" || request.isForMainFrame) return finish(false, null, null)
         val url = request.url.toString()
-        if (!UrlUtils.isHttpUrl(url)) return null
-        // v1.1 FIX: shouldInterceptRequest runs on a background thread and
-        // WebView.getUrl() may only be called on the main thread — calling
-        // view.url here crashed the app on every page load (the search
-        // crash). The tab tracks the current URL itself (set in
-        // onPageStarted on the main thread), so use that. A blank tab URL
-        // means unknown; shouldBlock(null) handles that safely.
+        if (!UrlUtils.isHttpUrl(url)) return finish(false, null, null)
+        // v1.1 FIX: the tab tracks the current URL itself (set in
+        // onPageStarted on the main thread), so use that — never view.url
+        // here (background thread). A blank tab URL means unknown;
+        // shouldBlock(null) handles that safely.
         val pageHost = UrlUtils.extractHost(tab.url)
-        if (state.settings.isAdBlockOffFor(pageHost)) return null
+        if (state.settings.isAdBlockOffFor(pageHost)) return finish(false, null, null)
         val result = state.adBlock.shouldBlock(url, pageHost)
-        if (result == BlockResult.ALLOWED) return null
+        if (result == BlockResult.ALLOWED) return finish(false, null, null)
         // shouldInterceptRequest runs on a background thread — count the
         // block on the main thread.
         view.post {
             if (result == BlockResult.AD) tab.blockedAds++ else tab.blockedTrackers++
         }
         // An empty response: the page keeps working, the ad simply never loads.
-        return WebResourceResponse("text/plain", "UTF-8", ByteArrayInputStream(ByteArray(0)))
+        return finish(
+            true, result.name,
+            WebResourceResponse("text/plain", "UTF-8", ByteArrayInputStream(ByteArray(0)))
+        )
     }
 
     override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
@@ -197,6 +242,23 @@ class NovaWebViewClient(
         tab.isLoading = true
         tab.canGoBack = view.canGoBack()
         tab.canGoForward = view.canGoForward()
+        // B-2: a new navigation resets the injection dedupe set (below).
+        injectedForUrls.clear()
+        // W4: per-site settings for the new host — JS off / desktop mode
+        // apply from this load, not only when the sheet changes them.
+        // (The UA change takes effect for subsequent requests; the JS
+        // flag applies immediately to this page's scripts.)
+        if (UrlUtils.isHttpUrl(url)) {
+            val host = UrlUtils.extractHost(url)
+            if (host != null) {
+                val perSite = state.perSiteSettingsFor(host)
+                try { view.settings.javaScriptEnabled = perSite.javaScriptEnabled } catch (_: Exception) { }
+                if (perSite.desktopMode != tab.desktopMode) {
+                    tab.desktopMode = perSite.desktopMode
+                    try { NovaWebView.applyDesktopMode(view, tab) } catch (_: Exception) { }
+                }
+            }
+        }
     }
 
     override fun onPageFinished(view: WebView, url: String) {
@@ -225,10 +287,46 @@ class NovaWebViewClient(
                 }
             }
         }
-        // YouTube Ad Skipper (v1.2) — a content script, not a network block:
-        // it mutes/skips video ads after they start. Independent of the
-        // global ad-block switch; its own toggle in Settings controls it.
-        if (state.shouldInjectSkipper(url)) injectYoutubeSkipper(view)
+        // NOVA Extensions (v2.0 W2) — userscripts + built-ins. The YouTube
+        // Ad Skipper is now registry-owned (its own toggle in Settings
+        // still controls it); the registry also serves installed
+        // userscripts and the Cookie Banner Hider.
+        injectExtensions(view, url)
+        // W4: the reader is open — re-extract for this page, never show
+        // the previous page's article.
+        refreshReaderIfOpen(view, url)
+    }
+
+    /** W4: if the reader is open and the page changed, re-extract the
+     *  article for the new page. A null result closes the reader (the
+     *  new page has no readable article) instead of showing stale text.
+     *  Skipped when the URL is unchanged — onPageFinished fires for the
+     *  page the reader was extracted from too. */
+    /** L8: one extraction in flight at a time — onPageFinished and
+     *  doUpdateVisitedHistory can fire for the same navigation, and two
+     *  concurrent extractions are duplicate work (last-wins). */
+    private var readerExtractInFlight = false
+
+    private fun refreshReaderIfOpen(view: WebView, url: String) {
+        if (state.readerArticle == null) return
+        if (state.readerUrl == url) return
+        if (readerExtractInFlight) return
+        readerExtractInFlight = true
+        ReaderRunner.extractArticle(view) { article ->
+            readerExtractInFlight = false
+            if (article == null) {
+                state.readerArticle = null
+                state.readerUrl = null
+                state.status("No readable article on this page")
+            } else {
+                state.readerArticle = article
+                state.readerUrl = url
+            }
+            // The page may have moved on while extracting — re-check so
+            // the reader never shows the previous page's article.
+            val currentUrl = view.url
+            if (currentUrl != null && currentUrl != url) refreshReaderIfOpen(view, currentUrl)
+        }
     }
 
     /** Re-inject the skipper on SPA navigations. YouTube changes videos
@@ -241,20 +339,70 @@ class NovaWebViewClient(
         super.doUpdateVisitedHistory(view, url, isReload)
         if (UrlUtils.isHttpUrl(url)) {
             tab.url = url
-            if (state.shouldInjectSkipper(url)) injectYoutubeSkipper(view)
+            injectExtensions(view, url)
+            // W4: SPA navigation while the reader is open — same rule as
+            // onPageFinished: re-extract, never show a stale article.
+            refreshReaderIfOpen(view, url)
         }
     }
 
-    /** Inject the YouTube Ad Skipper content script. The script itself is
-     *  idempotent (window.__novaYtSkipper guard), so re-injection on SPA
-     *  navigations is harmless. */
-    private fun injectYoutubeSkipper(view: WebView) {
-        val js = state.youtubeSkipperJs ?: return
+    // REMOVED in v2.0 (W6 N-3): the old standalone skipper injector
+    // (injectYoutubeSkipper) is gone — the skipper is registry-owned now
+    // and served by injectExtensions below, gated by the same Settings
+    // toggle AND the sensitive-page rule. The old call sites bypassed S-1
+    // (they ran the skipper on YouTube login pages).
+
+    /** B-2: URLs already injected for this navigation. onPageFinished
+     *  AND doUpdateVisitedHistory both fire per page load — without this
+     *  set every user script would inject twice (double buttons, double
+     *  handlers). Built-ins are safe either way (their own __nova guards),
+     *  but user scripts get no guard. Cleared in onPageStarted; SPA
+     *  navigations bring a new URL, so they still re-inject once. */
+    private val injectedForUrls = mutableSetOf<String>()
+
+    /** Inject NOVA Extensions userscripts (v2.0 W2). Two-phase: (1) probe
+     *  the page for a password field — a page with one is a sensitive page
+     *  (W6 S-1); (2) inject what the runtime returns for this URL,
+     *  document-start first. In :incognito, loadEffectiveScripts returns
+     *  built-ins only (W6 S-5). Main thread, so evaluateJavascript is legal. */
+    private fun injectExtensions(view: WebView, url: String) {
+        if (!UrlUtils.isHttpUrl(url)) return
+        // B-2: one injection per URL per navigation.
+        if (!injectedForUrls.add(url)) return
+        val context = view.context
+        val scripts = try {
+            ExtensionStore.loadEffectiveScripts(context, state.settings.youtubeAdSkipper) { asset ->
+                runCatching { context.assets.open(asset).bufferedReader().readText() }.getOrNull()
+            }
+        } catch (_: Exception) { return }
+        if (scripts.isEmpty()) return
         try {
-            view.evaluateJavascript(js, null)
-        } catch (_: Exception) {
-            // A page that rejects injection keeps working.
-        }
+            view.evaluateJavascript(ExtensionRuntime.PASSWORD_FIELD_PROBE_JS) { result ->
+                // B-6: the probe is async — between the probe and this
+                // callback an SPA/user navigation may have replaced the
+                // page. Scripts selected for URL A must never inject
+                // into page B (including a sensitive page B). Drop the
+                // injection when the WebView has moved on.
+                if (view.url != url) return@evaluateJavascript
+                if (result == null) {
+                    // Probe failure is fail-open by design (the host list
+                    // still protects known sensitive hosts) — but log it
+                    // distinctly instead of silently passing false.
+                    ErrorLog.log(
+                        state.context, "Extensions",
+                        "Password-field probe failed for $url — sensitive gating fell back to the host list",
+                        null
+                    )
+                }
+                val hasPasswordField = result?.trim() == "true"
+                val toInject = try {
+                    ExtensionRuntime.scriptsForUrl(scripts, url, state.settings.youtubeAdSkipper, hasPasswordField)
+                } catch (_: Exception) { emptyList() }
+                for (script in toInject) {
+                    try { view.evaluateJavascript(script.source, null) } catch (_: Exception) { }
+                }
+            }
+        } catch (_: Exception) { /* a page that rejects injection keeps working */ }
     }
 
     override fun onReceivedError(
@@ -306,6 +454,19 @@ class NovaWebChromeClient(
 
     override fun onReceivedTitle(view: WebView, title: String?) {
         if (!title.isNullOrBlank()) tab.title = title
+    }
+
+    override fun onConsoleMessage(message: ConsoleMessage?): Boolean {
+        if (message != null) {
+            DevToolsHub.recordConsole(
+                tab.id,
+                message.messageLevel().name,
+                message.message() ?: "",
+                message.sourceId(),
+                message.lineNumber()
+            )
+        }
+        return super.onConsoleMessage(message)
     }
 
     override fun onShowFileChooser(

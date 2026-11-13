@@ -1,6 +1,9 @@
 package com.nova.browser.ui
 
 import android.content.Context
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebSettings
@@ -13,21 +16,70 @@ import androidx.compose.runtime.setValue
 import com.nova.browser.adblock.AdBlockEngine
 import com.nova.browser.adblock.FilterLists
 import com.nova.browser.data.BrowserDb
+import com.nova.browser.data.CustomDownload
+import com.nova.browser.data.DownloadProgress
 import com.nova.browser.data.DownloadRow
+import com.nova.browser.data.DownloadState
 import com.nova.browser.data.Downloads
 import com.nova.browser.data.ErrorLog
 import com.nova.browser.data.SavedTab
 import com.nova.browser.data.Settings
 import com.nova.browser.data.Tab
+import com.nova.browser.data.TabStore
+import com.nova.browser.data.TabSuspension
+import com.nova.browser.reader.ArticleContent
+import com.nova.browser.web.LocalEntry
+import com.nova.browser.web.NovaWebView
+import com.nova.browser.web.PerSiteSettings
+import com.nova.browser.web.Suggestion
+import com.nova.browser.web.SuggestionEngine
+import com.nova.browser.web.SuggestionLocalSource
 import com.nova.browser.web.UrlUtils
-import com.nova.browser.web.YoutubeSkipper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
-enum class BrowserScreen { BROWSER, TABS, BOOKMARKS, DOWNLOADS, SETTINGS, ERROR_LOG }
+enum class BrowserScreen { BROWSER, TABS, BOOKMARKS, DOWNLOADS, SETTINGS, ERROR_LOG, EXTENSIONS, DEVTOOLS, HTTP_CLIENT }
+
+/** One custom (pause/resume) download job (W4). Held in memory by
+ *  BrowserState so DownloadsScreen can list it while it runs AND after
+ *  it finishes — Downloads.list() only knows DownloadManager rows, so a
+ *  MediaStore-published custom download would otherwise vanish from the
+ *  list even though the file is in Downloads/NOVA/Browser/.
+ *
+ *  LIMIT: the list is session-scoped. If the app is killed, completed
+ *  custom downloads disappear from the app's list (the file stays on
+ *  disk, visible in NOVA Files). DownloadManager downloads do not have
+ *  this limit — their rows live in the DB.
+ *
+ *  [latestProgress] is written from the downloader worker thread and
+ *  read by the Downloads screen's 1-second poll — no Compose state is
+ *  needed for the numbers. [publishedUri] is the MediaStore Uri of the
+ *  published file (normal mode only); the private copy in filesDir /
+ *  cacheDir is kept either way so a failed publish never destroys the
+ *  only copy.
+ *
+ *  [id] is unique per job (H1): the Downloads list keys rows by it,
+ *  never by URL+name — two jobs for the same URL+name must never
+ *  share a LazyColumn key. */
+class CustomDownloadJob(
+    val download: CustomDownload,
+    val fileName: String,
+    val url: String,
+    val privateMode: Boolean
+) {
+    val id: String = java.util.UUID.randomUUID().toString()
+    @Volatile var latestProgress: DownloadProgress? = null
+    @Volatile var done: Boolean = false
+    @Volatile var publishedUri: Uri? = null
+
+    /** The file as it actually exists on disk — [CustomDownload] may
+     *  uniquify the name (`name (1).ext`) on a collision, so the
+     *  requested [fileName] is not always the real name (L6). */
+    val displayName: String get() = download.file.name
+}
 
 /** Default home shortcuts seeded on first run (pinned bookmarks). */
 val DEFAULT_SHORTCUTS = listOf(
@@ -61,6 +113,7 @@ class BrowserState(
      *  exceptions, which would reveal which sites were visited privately. */
     val settings = Settings(context, privateMode)
     val db = BrowserDb(context)
+    val tabStore = TabStore(context, privateMode)
     var adBlock: AdBlockEngine = try {
         FilterLists.load(context, settings.customFilterRules)
     } catch (e: Exception) {
@@ -69,17 +122,24 @@ class BrowserState(
     }
         private set
 
-    /** The YouTube Ad Skipper content script (assets/youtube-skipper.js),
-     *  loaded once. Null when the asset is missing — injection is then
-     *  skipped (fail open: YouTube just plays its ads). */
-    val youtubeSkipperJs: String? = YoutubeSkipper.load(context)
+    // REMOVED in v2.0 (W6 N-3): the standalone skipper injector is gone —
+    // the skipper is registry-owned and injected by NovaClients
+    // .injectExtensions, gated by settings.youtubeAdSkipper AND the
+    // sensitive-page rule. The old youtubeSkipperJs/shouldInjectSkipper
+    // bypassed S-1 on YouTube login pages.
 
-    /** True when the YouTube Ad Skipper should run on [url]: the toggle is
-     *  on and the host is YouTube. The skipper is independent of the global
-     *  ad-block switch — it has its own toggle in Settings. */
-    fun shouldInjectSkipper(url: String): Boolean {
-        if (!settings.youtubeAdSkipper) return false
-        return UrlUtils.isYouTubeHost(UrlUtils.extractHost(url))
+    /** Bridge for the DevTools dock. Called on the main thread only
+     *  (the dock calls it from composition / Main-dispatcher coroutines),
+     *  so evaluateJavascript is legal here. */
+    val devToolsHost: DevToolsHost = object : DevToolsHost {
+        override fun evaluateJs(script: String, onResult: (String?) -> Unit) {
+            val webView = currentTab?.webView
+            if (webView == null) { onResult(null); return }
+            try {
+                webView.evaluateJavascript(script) { result -> onResult(result) }
+            } catch (_: Exception) { onResult(null) }
+        }
+        override fun currentUrl(): String? = currentTab?.url?.takeIf { it.isNotBlank() }
     }
 
     private val ioScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -92,6 +152,157 @@ class BrowserState(
      *  shared downloads table is never written from a private session, so
      *  a private download never appears in the normal Downloads list. */
     val privateDownloads = mutableStateListOf<DownloadRow>()
+
+    /** Custom (pause/resume) download jobs (W4) — in-progress AND
+     *  completed. See [CustomDownloadJob]. */
+    val customDownloads = mutableStateListOf<CustomDownloadJob>()
+
+    /** True while any custom download job is actually transferring (W4)
+     *  — fed to the tab-suspension gate so a tab is never suspended
+     *  mid-download. H3: a PAUSED job is NOT transferring (same reasoning
+     *  as the DM STATUS_PAUSED exclusion) — counting it would disable
+     *  suspension forever for a forgotten paused download. */
+    val hasActiveCustomDownload: Boolean
+        get() = customDownloads.any {
+            it.download.state == DownloadState.DOWNLOADING ||
+                it.download.state == DownloadState.QUEUED
+        }
+
+    /** Search-suggestion engine (W4). The local source reads history +
+     *  bookmarks from the DB — suggestDebounced runs it on a worker
+     *  thread, never the main thread. In private mode the engine
+     *  returns nothing (the caller passes tab.incognito), so no
+     *  keystroke leaves the device and no private history can leak
+     *  into the dropdown. */
+    val suggestionEngine = SuggestionEngine(object : SuggestionLocalSource {
+        override fun historyEntries(query: String): List<LocalEntry> =
+            try {
+                db.searchHistory(query, 20)
+                    .map { LocalEntry(it.title, it.url, it.visitCount, it.visitedAt) }
+            } catch (_: Exception) { emptyList() }
+
+        override fun bookmarkEntries(query: String): List<LocalEntry> =
+            try {
+                db.listBookmarks()
+                    .filter {
+                        it.title.contains(query, ignoreCase = true) ||
+                            it.url.contains(query, ignoreCase = true)
+                    }
+                    .take(20)
+                    .map { LocalEntry(it.title, it.url, 1, it.createdAt) }
+            } catch (_: Exception) { emptyList() }
+    })
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    /** Post [action] to the main thread. Download callbacks run on the
+     *  downloader worker thread (H2) — Compose state (status, the jobs
+     *  list) must only be touched from the main thread, so BrowserHost
+     *  routes its onResult/onCancelled bodies through here. */
+    fun postOnMain(action: () -> Unit) {
+        mainHandler.post(action)
+    }
+
+    /** True once a private session has started closing (H2). Set at the
+     *  top of PrivateActivity.onDestroy, before jobs are cancelled and
+     *  dirs are wiped: any download failure after this point must NOT
+     *  fall back to DownloadManager, or a private file would land on
+     *  disk after the wipe already ran. */
+    @Volatile var privateSessionClosing: Boolean = false
+
+    /** Address-bar suggestions from the engine (W4). Written from the
+     *  engine's worker thread — always posted to the main thread first
+     *  (see [postSuggestions]). */
+    var addressSuggestions by mutableStateOf<List<Suggestion>>(emptyList())
+        private set
+
+    fun postSuggestions(results: List<Suggestion>) {
+        mainHandler.post { addressSuggestions = results }
+    }
+
+    fun clearSuggestions() {
+        suggestionEngine.cancelPending()
+        addressSuggestions = emptyList()
+    }
+
+    /** Reader mode (W4): the article currently shown, or null when the
+     *  reader is closed. Set by the menu action via ReaderRunner;
+     *  cleared when the underlying page navigates away (NovaClients
+     *  re-extracts and closes it on a null result). */
+    var readerArticle by mutableStateOf<ArticleContent?>(null)
+
+    /** The URL [readerArticle] was extracted from (W4) — NovaClients
+     *  re-extracts only when the page URL differs from this, so the
+     *  reader is not re-extracted on every onPageFinished. */
+    var readerUrl by mutableStateOf<String?>(null)
+
+    /** Per-site settings sheet (W4). [siteSettingsPrevious] is the state
+     *  before the latest change — the coordinator keeps it so the sheet
+     *  can show its reload note and the reload fires once, debounced. */
+    var siteSettingsOpen by mutableStateOf(false)
+    var siteSettingsPrevious by mutableStateOf<PerSiteSettings?>(null)
+
+    /** W4: debounced reload for per-site changes (JavaScript and
+     *  desktop mode need a reload to take effect). Each call re-arms
+     *  the 300 ms timer, so rapid toggles collapse into one reload.
+     *
+     *  M6: the reload fires only if the same tab is still current and
+     *  still on the same host — without that, toggling then switching
+     *  tabs within 300 ms reloads the OTHER tab. Cancel it on sheet
+     *  dismiss, tab switch and onCleared (see cancelPendingSiteReload). */
+    private var siteReloadRunnable: Runnable? = null
+
+    fun reloadAfterSiteChangeDebounced(host: String) {
+        siteReloadRunnable?.let { mainHandler.removeCallbacks(it) }
+        val tabId = currentTabId
+        val r = Runnable {
+            siteReloadRunnable = null
+            val tab = currentTab
+            if (tab != null && tab.id == tabId &&
+                com.nova.browser.web.UrlUtils.extractHost(tab.url ?: "") == host) {
+                reloadCurrent()
+            }
+        }
+        siteReloadRunnable = r
+        mainHandler.postDelayed(r, 300)
+    }
+
+    /** M6: drop a pending site-settings reload (sheet dismissed, tab
+     *  switched, browser cleared) so it can never reload the wrong tab. */
+    fun cancelPendingSiteReload() {
+        siteReloadRunnable?.let { mainHandler.removeCallbacks(it) }
+        siteReloadRunnable = null
+    }
+
+    /** Per-site settings for [host], from the Settings sets (W4). */
+    fun perSiteSettingsFor(host: String): PerSiteSettings = PerSiteSettings(
+        host = host,
+        javaScriptEnabled = !settings.isJsOffFor(host),
+        desktopMode = settings.isDesktopModeFor(host),
+        adBlockEnabled = !settings.isAdBlockOffFor(host)
+    )
+
+    /** Apply a per-site change (W4): persist the sets in the current
+     *  Settings file (the NORMAL file in a normal session, the PRIVATE
+     *  file in a private session — the sheet IS reachable from
+     *  PrivateActivity, and per-site choices made privately must stay
+     *  in the private file that is wiped with the session — L4), then
+     *  apply JavaScript + desktop mode to the live WebView. Ad-block
+     *  applies on the next load, so it needs no live change. The caller
+     *  reloads once (debounced) when [PerSiteSettings.needsReloadAfter]
+     *  says so. */
+    fun applyPerSiteSettings(next: PerSiteSettings) {
+        settings.setJsOffFor(next.host, !next.javaScriptEnabled)
+        settings.setDesktopModeFor(next.host, next.desktopMode)
+        settings.setAdBlockOffFor(next.host, !next.adBlockEnabled)
+        val tab = currentTab ?: return
+        val webView = tab.webView ?: return
+        try { webView.settings.javaScriptEnabled = next.javaScriptEnabled } catch (_: Exception) { }
+        if (next.desktopMode != tab.desktopMode) {
+            tab.desktopMode = next.desktopMode
+            try { NovaWebView.applyDesktopMode(webView, tab) } catch (_: Exception) { }
+        }
+    }
 
     var screen by mutableStateOf(BrowserScreen.BROWSER)
     var menuExpanded by mutableStateOf(false)
@@ -156,6 +367,7 @@ class BrowserState(
     }
 
     fun closeTab(tab: Tab) {
+        if (!tab.incognito && tab.url.isNotBlank()) tabStore.pushClosed(tab.toClosedTab())
         val index = tabs.indexOf(tab)
         val wasCurrent = tab.id == currentTabId
         tabs.remove(tab)
@@ -176,6 +388,10 @@ class BrowserState(
     }
 
     fun selectTab(tab: Tab) {
+        TabSuspension.markTabUsed(tab)
+        // M6: a site-settings reload scheduled for the old tab must not
+        // fire for the new one.
+        cancelPendingSiteReload()
         currentTabId = tab.id
         screen = BrowserScreen.BROWSER
     }
@@ -184,6 +400,9 @@ class BrowserState(
         tab.webView?.let { return it }
         val webView = webViewFactory(tab)
         tab.webView = webView
+        // P-3: the tab is live again only now — clear the Suspended badge
+        // once the WebView actually exists, not on select.
+        tab.discarded = false
         // A tab created with a URL (restored session, external link, new
         // window) has no WebView yet — the fresh WebView must be told to
         // load the URL, or the tab stays blank forever. loadUrl() and
@@ -286,8 +505,11 @@ class BrowserState(
 
     // ---- Bookmarks ----
 
-    /** Toggle the bookmark for the tab's URL. Returns the new state. */
+    /** Toggle the bookmark for the tab's URL. Returns the new state.
+     *  P-2 (W6 baseline): a private tab must never write the shared
+     *  bookmarks table — the star is also hidden in private mode. */
     fun toggleBookmark(tab: Tab): Boolean {
+        if (privateMode || tab.incognito) return false
         val url = tab.url
         if (url.isBlank()) return false
         return if (db.isBookmarked(url)) {
@@ -309,7 +531,7 @@ class BrowserState(
         try {
             val saved = tabs
                 .filter { !it.incognito && it.url.isNotBlank() }
-                .map { SavedTab(it.url, it.title, 0) }
+                .map { SavedTab(it.url, it.title, 0, it.groupId) }
             db.saveTabs(saved)
         } catch (_: Exception) { }
     }
@@ -320,7 +542,15 @@ class BrowserState(
             newTab("")
             return
         }
-        saved.forEach { newTab(it.url, title = it.title, select = false) }
+        saved.forEach {
+            val tab = newTab(it.url, title = it.title, select = false)
+            // D-2: group membership survives a kill via the tabs table —
+            // loadGroups' URL re-link is only the fallback for tabs whose
+            // URL changed since the last save.
+            tab.groupId = it.groupId
+        }
+        // Persist once more now that every restored tab carries its group.
+        saveTabs()
         currentTabId = tabs.firstOrNull()?.id
     }
 
@@ -362,6 +592,7 @@ class BrowserState(
     }
 
     fun onCleared() {
+        cancelPendingSiteReload()
         ioScope.cancel()
     }
 }

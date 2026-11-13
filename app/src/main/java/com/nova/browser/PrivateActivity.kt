@@ -2,6 +2,7 @@ package com.nova.browser
 
 import android.content.Intent
 import android.os.Bundle
+import android.os.Environment
 import android.os.Process
 import android.webkit.WebView
 import androidx.activity.ComponentActivity
@@ -56,6 +57,13 @@ class PrivateActivity : ComponentActivity() {
         if (!isPrivateSessionAlive()) {
             try {
                 File(applicationInfo.dataDir, "app_webview_incognito").deleteRecursively()
+            } catch (_: Exception) { }
+            // L7: same for private custom downloads — a killed session
+            // leaves its cacheDir/Downloads behind (partials, metas and
+            // finished files). Only safe here, at a fresh process start:
+            // a live session's downloads are in this same directory.
+            try {
+                File(cacheDir, "Downloads").deleteRecursively()
             } catch (_: Exception) { }
         }        // Marker so the normal activity can offer "Private tabs are open".
         // The pid lets it tell a live session from a stale marker.
@@ -153,6 +161,17 @@ class PrivateActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         if (isFinishing) {
+            // H2: FIRST cancel every running custom download and raise
+            // the closing flag, BEFORE deleting anything. A download
+            // that fails after the wipe would otherwise fall back to
+            // DownloadManager and land a private file on disk after the
+            // session is supposedly wiped. cancel() is synchronous for
+            // the state change (PAUSED/QUEUED die at once; a running
+            // worker is disconnected and cleans up its own partial).
+            state.privateSessionClosing = true
+            try {
+                for (job in state.customDownloads.toList()) job.download.cancel()
+            } catch (_: Exception) { }
             // Wipe everything the private session left behind, then kill
             // this throwaway process so nothing can linger in memory.
             // That includes the private prefs file (per-site choices made
@@ -167,6 +186,20 @@ class PrivateActivity : ComponentActivity() {
                 File(File(applicationInfo.dataDir, "shared_prefs"), "nova_browser_private.xml").delete()
             } catch (_: Exception) { }
             try { File(filesDir, "error-log-private.txt").delete() } catch (_: Exception) { }
+            // W4: private custom downloads live in cacheDir/Downloads
+            // and are never published — delete them with the session.
+            // (Normal custom downloads live in filesDir/Downloads and
+            // must NOT be touched here — the app data dir is shared
+            // between the two processes.)
+            try { File(cacheDir, "Downloads").deleteRecursively() } catch (_: Exception) { }
+            // P-1 (W6 baseline): private DownloadManager downloads live
+            // in the app-private external files dir — delete them with
+            // the session too, or the file survives the wipe.
+            try {
+                getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.let { dir ->
+                    File(dir, "NOVA/Browser").deleteRecursively()
+                }
+            } catch (_: Exception) { }
             try { state.onCleared() } catch (_: Exception) { }
             Process.killProcess(Process.myPid())
         }
