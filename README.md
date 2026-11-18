@@ -6,7 +6,53 @@ downloader. Built with Kotlin + Jetpack Compose in the NOVA Glass Premium
 style (v2.1; Nebula Dark Premium before it).
 
 - **Package:** `com.nova.browser` · **minSdk 29** · **targetSdk 35**
-- **Version:** 2.1 (versionCode 5)
+- **Version:** 2.2 (versionCode 6)
+
+## v2.2 — Security & Reliability Audit (no new features)
+
+- **F01 HTTPS-only, intercept level** — plain-http sub-resources, iframes,
+  fetch/XHR and https→http downgrade redirects are now upgraded (307,
+  method-preserving) or blocked in `shouldInterceptRequest`; localhost/LAN
+  and per-site exceptions still exempt. `network_security_config.xml`
+  stays cleartext-permissive on purpose (localhost dev servers need it).
+- **F02 intent URLs validated** — explicit components/selectors, non-http(s)
+  data and non-fallback extras are rejected; a user gesture or an
+  "Open in another app?" confirmation is required before any external
+  launch; fallback loads in-browser when the app is missing.
+- **F05 userscripts fail closed** — the password-field probe is tri-state
+  (HAS_PASSWORD / NO_PASSWORD / UNKNOWN); an inconclusive probe blocks
+  user-installed scripts (built-ins stay gated by the host list only).
+  Probe now walks open shadow DOM + same-origin iframes; sensitive host
+  list expanded 10 → 30. Residual: a password field added after injection
+  cannot be un-injected; closed shadow roots / cross-origin iframes are
+  unreadable by design.
+- **F03 WebView permissions queued** — only VIDEO/AUDIO_CAPTURE are
+  grantable (after the Android permission + a user confirmation naming
+  the origin); PROTECTED_MEDIA_ID / unknown / empty requests are denied
+  at enqueue; concurrent requests are decided one at a time, by id.
+- **F06 clear-on-exit verified** — wipe runs history → cookies (callback)
+  → flush → storage → cache, and reports VERIFIED / PARTIAL / FAILED;
+  a kill mid-wipe is recorded as UNVERIFIED at next launch and shown in
+  Settings. Wipe-on-kill itself is still impossible on Android.
+- **F04 reproducible build** — `tools/deps-checksums.txt` pins all 1516
+  snapshot files (sha256); `tools/verify-deps.sh` runs on every build.
+  Build commands in this README are verified against the real scripts.
+- **Audit 2** (independent, after integration) found and fixed 6 more
+  bugs: package-only intents loading the fallback instead of the app;
+  POST forms losing their body on HTTPS upgrade; a stale "Load with HTTP
+  anyway" affordance; SPA back-navigation skipping userscript injection;
+  wipe claiming VERIFIED with no live WebView; a page-driven crash via
+  `openExternal`.
+- **Tests: 1149/1149 JVM tests pass** (AdBlock 41, UrlUtils 72, Cosmetic 8,
+  TabGroups 91, Extensions 226, ReaderSuggestions 192, DevTools 257,
+  HttpsEnforcer 81, IntentValidator 61, PermissionQueue 71, ClearOnExit
+  49). Instrumentation tests live in `tests/androidTest/` — written for
+  device/emulator only, never run here, not claimed passing.
+- **Honest limits:** no Gradle build exists (see "Build limits"); the
+  307-upgrade POST resubmission, the F01/F02/F05 dialog flows and the
+  clear-on-exit kill case still need phone verification; a fresh
+  dependency re-fetch resolves older transitive versions than the shipped
+  snapshot (see "Build limits").
 
 ## v2.1 — Glass Premium theme (style only)
 
@@ -117,17 +163,107 @@ tools/build-apk.sh
 ```
 
 It reuses the NOVA Files toolchain (JDK, kotlinc, SDK) and a private
-snapshot of its dependency jars/AARs in `deps-snapshot/` (90 jars + 45 AAR
-packages), so another agent rebuilding NOVA Files can't change the inputs
-mid-build. The d8 step is serialized — never run two d8 processes at once
-on this VM (each takes `-Xmx2G` and concurrent runs OOM-kill the build).
+snapshot of its dependency jars/AARs in `deps-snapshot/` (90 jars + 85
+extracted AARs, 45 of them with resources), so another agent rebuilding
+NOVA Files can't change the inputs mid-build. The d8 step is serialized —
+never run two d8 processes at once on this VM (each takes `-Xmx2G` and
+concurrent runs OOM-kill the build); run builds under
+`flock /tmp/nova-browser-build.lock`.
 
-To re-fetch dependencies from scratch (needs network):
+### Re-fetching dependencies from scratch (needs network)
+
+`deps/` and `deps-snapshot/` are gitignored, so a fresh clone cannot build
+until the dependencies are re-fetched. The recovery path, verified
+2026-11-13 from a clean copy of the v2.1 tag (see "Build limits"):
 
 ```sh
-tools/resolve_deps.py   # writes tools/deps.txt
-tools/prep_deps.py      # downloads jars/AARs into deps/
+# 1. Resolve + download the Maven artifacts listed in tools/deps.txt
+#    into deps/ (the grep strips the comment header in deps.txt — a bare
+#    $(cat tools/deps.txt) passes the comment words as artifacts and
+#    resolve_deps.py crashes with ValueError).
+python3 tools/resolve_deps.py deps/ $(grep -v '^#' tools/deps.txt)
+
+# 2. Extract the AARs/JARs into build/ (build/jars, build/aar, plus
+#    build/jars.txt and build/aar-packages.txt). prep_deps.py downloads
+#    nothing — it only reads deps/ and extracts into build/.
+python3 tools/prep_deps.py
+
+# 3. Build the deps-snapshot/ that tools/build-apk.sh reads. There is no
+#    script for this yet — it is a copy plus a path rewrite (build/ →
+#    deps-snapshot/) of the two generated lists.
+mkdir -p deps-snapshot
+cp -a build/jars deps-snapshot/jars
+cp -a build/aar deps-snapshot/aar
+sed "s|$PWD/build/|$PWD/deps-snapshot/|g" build/jars.txt > deps-snapshot/jars.txt
+sed "s|$PWD/build/|$PWD/deps-snapshot/|g" build/aar-packages.txt > deps-snapshot/aar-packages.txt
+
+# 4. Re-pin the checksums to the rebuilt snapshot, verify it, then build.
+#    A fresh re-fetch does NOT match tools/deps-checksums.txt (it pins the
+#    snapshot that shipped with v2.1; a fresh resolve picks older
+#    transitive versions — see "Build limits"), so verify-deps.sh would
+#    fail until the file is re-pinned.
+{ grep '^#' tools/deps-checksums.txt; (cd deps-snapshot && find jars aar -type f | sort | xargs sha256sum); } > /tmp/deps-checksums-new.txt
+mv /tmp/deps-checksums-new.txt tools/deps-checksums.txt
+tools/verify-deps.sh
+flock /tmp/nova-browser-build.lock tools/build-apk.sh
+# → build/apk/nova-browser-debug.apk
 ```
+
+Dependency pinning: `tools/deps-checksums.txt` holds sha256 checksums for
+every file in `deps-snapshot/` (1516 files: 90 jars + the contents of the
+85 extracted AARs); `tools/verify-deps.sh` checks the snapshot against it
+and fails loudly on any missing or tampered artifact. After any snapshot
+rebuild, re-pin with the command in step 4 above.
+
+## Build limits (honest)
+
+- **No Gradle build exists.** Gradle cannot run or be verified on this
+  server — the Gradle daemon protocol fails (Java loopback TCP is
+  intercepted) and Java HTTPS through the egress proxy fails. The manual
+  aapt2 + kotlinc + d8 pipeline in `tools/build-apk.sh` is the only build.
+  Do not claim a Gradle build works.
+- **Instrumentation tests have not been run here.** The JVM unit tests
+  (`tests/run-tests.sh`) run on this server; instrumentation tests need a
+  device or emulator and have never been run in this environment.
+- **Clean-tree recovery, verified 2026-11-13 from the v2.1 tag**
+  (tag v2.1 on `https://github.com/irfan420x/NOVA-Browser`): resolve →
+  prep → snapshot → build works end to end and produces a signed APK
+  (versionCode 5, versionName 2.1, 16,605,614 bytes, apksigner verify OK,
+  launchable `com.nova.browser.MainActivity`). Three things the old docs
+  got wrong: the bare `$(cat tools/deps.txt)` invocation crashes
+  (deps.txt's comment header becomes fake artifacts); `prep_deps.py`
+  downloads nothing; and `build-apk.sh` needs a `deps-snapshot/` that
+  neither script creates — the snapshot copy + path rewrite is a manual
+  step (see Build, step 3). The recovery also needs the NOVA Files
+  toolchain (`~/workspace/nova-files`, JDK + kotlinc) and the Android SDK
+  (`~/android-sdk`) — a clone alone is not enough — and ~400 MB free in
+  the work directory (`/tmp` here is a 512 MB tmpfs; two clean trees
+  filled it). A tarball download of the repo also loses the executable
+  bit — run `chmod +x tools/build-apk.sh` first (a git clone preserves it).
+- **A fresh re-fetch is NOT bit-identical to the shipped snapshot.**
+  `resolve_deps.py` takes the first version it encounters for each
+  transitive dependency (no version mediation), so a re-fetch today
+  resolves older transitive versions than the v2.1 snapshot: 88 jars /
+  77 AARs / 38 resource packages instead of 90 / 85 / 45, e.g.
+  activity 1.1.0 (snapshot: 1.9.2), lifecycle 2.6.x (2.8.5), Compose
+  ui-* 1.6.x/1.7.0 (1.7.2). The v2.1 clean-tree build still succeeded
+  with the drifted set, but the resulting APK differs from the shipped
+  v2.1 (16,605,614 bytes vs 16,790,495) and will NOT match
+  `tools/deps-checksums.txt` until it is re-pinned. True reproducibility
+  (same bytes from a clean clone) needs a pinned transitive lockfile,
+  which does not exist yet.
+- **The v2.2 tree is a moving target.** The workspace copy made during
+  the v2.2 hardening work failed to compile: F05 had changed
+  `ExtensionRuntime.scriptsForUrl` to take a tri-state
+  `PasswordProbeResult` while `NovaClients.kt` still passed a Boolean.
+  The call site has since been updated to convert via
+  `PasswordProbeResult.fromProbeResult`, but no clean-tree build of the
+  in-progress v2.2 tree was run — other workstreams are still editing
+  it, so a build now would chase a moving target. The verified
+  clean-tree build above is of the released v2.1 tag.
+- **Snapshot verification is manual for now.** `tools/verify-deps.sh`
+  exists and works, but `tools/build-apk.sh` does not call it yet — the
+  hook is pending with the v2.2 coordinator.
 
 ## Tests
 
@@ -174,6 +310,7 @@ tools/
   build-apk.sh                 the manual build (aapt2 + kotlinc + d8 + sign)
   deps.txt                     dependency list (reused from NOVA Files)
   resolve_deps.py / prep_deps.py / dedupe_jars.py
+  verify-deps.sh / deps-checksums.txt  snapshot pinning (sha256, F04)
 tests/                         JVM unit tests + run-tests.sh
 ```
 

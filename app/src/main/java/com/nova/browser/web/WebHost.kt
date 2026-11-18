@@ -47,4 +47,16 @@ interface WebHost {
 
     /** Open an external intent (tel:, mailto:, market:, ...). */
     fun openExternal(intent: Intent): Boolean
+
+    /** A page wants to open an external app via an intent:// URL that
+     *  needs user confirmation (no gesture, or a package with no web
+     *  fallback). Show an Allow/Deny dialog naming the package (or the
+     *  URL when there is none) and run [onAllow] exactly once if the
+     *  user taps Allow; on Deny/cancel do nothing. */
+    fun confirmExternalIntent(
+        packageName: String?,
+        fallbackUrl: String?,
+        originalUrl: String,
+        onAllow: () -> Unit
+    )
 }

@@ -83,8 +83,18 @@ class Tab(
     var findResult by mutableStateOf("")
 
     /** True when the current URL was upgraded from http by HTTPS-only mode.
-     *  The error overlay offers "Load with HTTP anyway" only in that case. */
+     *  The error overlay offers "Load with HTTP anyway" only in that case.
+     *  AUDIT 2 (F01-B): this flag is only meaningful for the navigation
+     *  recorded in [upgradedFromHttpUrl] — onPageStarted clears both
+     *  when the tab loads a different URL, so a stale flag can never
+     *  offer (and permanently record) an http exception for a site
+     *  that was never upgraded. */
     var wasUpgradedFromHttp by mutableStateOf(false)
+
+    /** The https URL the upgrade above loaded. Null when the current
+     *  page was not reached by an upgrade. Plain var (not Compose
+     *  state): only onPageStarted reads it, the UI reads the flag. */
+    var upgradedFromHttpUrl: String? = null
 
     /** Set while an SSL-error dialog is open. One-shot: the handler is only
      *  valid until the user answers or the page is left. Compose state, so

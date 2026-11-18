@@ -14,7 +14,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.nova.browser.data.ClearOnExit
 import com.nova.browser.data.SearchEngine
+import com.nova.browser.data.WipeStatus
 import com.nova.browser.devtools.DevToolsHub
 import androidx.compose.ui.graphics.Color
 
@@ -188,9 +190,18 @@ fun SettingsScreen(
                 // throwaway private prefs and never runs there (private
                 // sessions already wipe on close).
                 if (!state.privateMode) {
+                    // F06: show the last wipe's verified status so a
+                    // partial/unverified wipe is visible, not silent.
+                    val wipeStatusLine = when (ClearOnExit.lastWipeStatus(context)) {
+                        WipeStatus.VERIFIED -> "\nLast wipe: verified."
+                        WipeStatus.PARTIAL -> "\nLast wipe: partial — some data may remain."
+                        WipeStatus.FAILED -> "\nLast wipe: failed — data may remain."
+                        WipeStatus.UNVERIFIED -> "\nLast wipe: unverified — the app closed before the wipe finished."
+                        WipeStatus.NOT_RUN -> ""
+                    }
                     SettingsSwitch(
                         title = "Clear browsing data on exit",
-                        subtitle = "Clears history, cookies and cache when the browser closes cleanly. Does not run if the app is swiped away or killed.",
+                        subtitle = "Clears history, cookies and cache when the browser closes cleanly. Does not run if the app is swiped away or killed.$wipeStatusLine",
                         checked = clearOnExit,
                         onChange = {
                             clearOnExit = it

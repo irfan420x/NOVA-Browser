@@ -35,6 +35,13 @@ class MainActivity : ComponentActivity() {
             webViewFactory = { tab -> host.createWebView(tab) }
         )
         host = BrowserHost(this, state)
+        // F06: a wipe left pending means the process died before the cookie
+        // callback — record it as UNVERIFIED, never as success.
+        // AUDIT 2: checked unconditionally, not only when clear-on-exit
+        // is currently on — a wipe interrupted in an earlier session
+        // stays pending (and the status stale) if the user turned the
+        // toggle off afterwards; the flag is the evidence either way.
+        try { ClearOnExit.checkInterruptedWipe(applicationContext) } catch (_: Exception) { }
         // W4 startup, once: drop orphaned .meta sidecars left by a
         // killed custom download, and route suggestion-engine debug
         // output to logcat (the engine itself never logs).
@@ -155,9 +162,27 @@ class MainActivity : ComponentActivity() {
             // sessions wipe unconditionally on close already).
             if (state.settings.clearOnExit) {
                 try {
-                    ClearOnExit.wipe(this) {
-                        try { state.currentTab?.webView?.clearCache(true) } catch (_: Exception) { }
-                    }
+                    ClearOnExit.wipe(this,
+                        onClearWebViewCache = {
+                            // AUDIT 2 (F06-A): report honestly. The first
+                            // live WebView across tabs clears the shared
+                            // profile cache; no live WebView means the
+                            // clear was NOT performed (a destroyed
+                            // WebView's disk cache may remain), so return
+                            // false and let the wipe report PARTIAL
+                            // rather than claiming a clear that never ran.
+                            try {
+                                val wv = state.tabs.firstNotNullOfOrNull { it.webView }
+                                    ?: return@wipe false
+                                wv.clearCache(true)
+                                true
+                            } catch (_: Exception) {
+                                false
+                            }
+                        },
+                        onResult = { /* Result is already persisted to prefs and
+                            ErrorLog'd inside wipe() when not VERIFIED. Do not
+                            touch UI here — the activity is finishing. */ })
                 } catch (_: Exception) { }
             }
         }

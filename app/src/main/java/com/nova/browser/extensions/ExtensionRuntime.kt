@@ -34,6 +34,47 @@ import java.net.URL
  *   the WebView offers). A document-start script therefore runs late on
  *   first paint — documented, not hidden.
  *
+ * Sensitive-page probe — FAIL CLOSED (F05, v2.2; replaces the W6 fail-open
+ * rule): the probe result is tri-state ([PasswordProbeResult]), not a
+ * boolean. The old code treated a failed probe as "no password field"
+ * (`result == "true"`, null → false), so user scripts ran whenever the
+ * probe failed — and the probe was a single
+ * `document.querySelector('input[type=password]')`, which misses
+ * shadow-DOM fields, cross-origin iframe fields, and dynamically-added
+ * fields. The split is deliberate and asymmetric:
+ * - USER-INSTALLED scripts: [PasswordProbeResult.UNKNOWN] (probe returned
+ *   null, threw, timed out, or returned an unexpected value) BLOCKS them,
+ *   exactly like a password field would. A page whose state we cannot
+ *   establish is treated as sensitive. An explicit per-host allow
+ *   ([Userscript.allowedSensitiveHosts]) still overrides — the user
+ *   opted that host in knowingly.
+ * - BUILT-IN scripts (YouTube Ad Skipper, Cookie Banner Hider): first-party,
+ *   reviewed code. UNKNOWN does NOT block them — they keep their previous
+ *   behaviour: blocked on a KNOWN password page
+ *   ([PasswordProbeResult.HAS_PASSWORD]) and on sensitive hosts, running
+ *   otherwise. On a failed probe the host list is their only gate.
+ * - The default probe argument everywhere is UNKNOWN, so a caller that
+ *   forgets to pass the probe result fails closed for user scripts
+ *   instead of silently running them.
+ *
+ * Probe coverage (F05): [PASSWORD_FIELD_PROBE_JS] now walks shadow DOM
+ * recursively (every element's `shadowRoot`) and same-origin iframes
+ * (`contentDocument`, per-frame try/catch so one cross-origin frame
+ * cannot kill the probe). It returns the strings "true" / "false" /
+ * "error" and never throws to the caller; "error" maps to UNKNOWN.
+ * Honest limits, not solved here:
+ * - CLOSED shadow roots (`el.shadowRoot == null`) are unreadable by
+ *   design — a password field inside one is invisible to the probe.
+ * - CROSS-ORIGIN iframes are unreadable by design (same-origin policy)
+ *   — a password field inside one is invisible to the probe.
+ * - DYNAMIC fields: the probe runs once per navigation (onPageFinished
+ *   and doUpdateVisitedHistory both re-probe, so SPA navigations get a
+ *   fresh probe). But a password field added to the SAME page AFTER
+ *   injection cannot be un-injected — the script is already running.
+ *   That post-injection window is a residual risk, documented here and
+ *   not pretended away. The host list is the backstop for known
+ *   sensitive hosts even in that window.
+ *
  * Built-in registry:
  * - "YouTube Ad Skipper" — the existing assets/youtube-skipper.js. Its
  *   master switch is Settings.youtubeAdSkipper ([youtubeSkipperEnabled]);
@@ -64,32 +105,99 @@ object ExtensionRuntime {
 
     /**
      * Sensitive-site protection (W6 S-1, plan §8: "content scripts are
-     * default-off on sensitive sites"). Two layers:
+     * default-off on sensitive sites"; fail-closed per F05). Two layers:
      *
      * 1. Host list (synchronous, always on): well-known payment/identity
-     *    hosts. Best-effort and deliberately small — a curated blocklist of
-     *    every bank on earth is unmaintainable, so this is a backstop, not
-     *    the mechanism.
+     *    hosts. Best-effort and deliberately curated (~30 entries) — a
+     *    blocklist of every bank on earth is unmaintainable, so this is a
+     *    backstop, not the mechanism.
      * 2. Password-field pre-check (the real mechanism): at injection time
      *    the hook runs [PASSWORD_FIELD_PROBE_JS] in the page; a page that
      *    contains `input[type=password]` is a sensitive page whatever its
-     *    host is. The probe result is passed as [hasPasswordField].
+     *    host is. The probe result is passed as a [PasswordProbeResult].
      *
      * A script runs on a sensitive page ONLY when the user explicitly
      * allowed that host for that script ([Userscript.allowedSensitiveHosts]
      * — opt-in, managed in the Extensions screen). The rule applies to
-     * built-ins too: the Cookie Banner Hider matches every site and would
-     * otherwise run on banking pages. Probe failure is fail-OPEN for
-     * usability (a page whose CSP blocks the probe still loads and still
-     * runs scripts) — the host list is the layer that never depends on
-     * the probe.
+     * built-ins too on a KNOWN password page: the Cookie Banner Hider
+     * matches every site and would otherwise run on banking pages.
+     * On an UNKNOWN probe the two script kinds split — see the class doc.
+     */
+    /**
+     * Tri-state result of the password-field probe (F05). There is no
+     * boolean anywhere in this path anymore: a boolean cannot express
+     * "the probe failed", and the old `result == "true"` mapping turned
+     * every failure into "no password field" (fail open).
+     */
+    sealed class PasswordProbeResult {
+        /** The probe found a password field (light or shadow DOM, or a
+         *  same-origin iframe). The page IS sensitive. */
+        object HAS_PASSWORD : PasswordProbeResult()
+
+        /** The probe ran cleanly and found no password field. */
+        object NO_PASSWORD : PasswordProbeResult()
+
+        /** The probe did not produce a trustworthy answer: the
+         *  evaluateJavascript callback got null, the probe threw or
+         *  timed out, or it returned an unexpected value. Treated as
+         *  sensitive for user-installed scripts (fail closed). */
+        object UNKNOWN : PasswordProbeResult()
+
+        companion object {
+            /**
+             * Map a raw evaluateJavascript callback value to the tri-state.
+             * The probe returns a JS string, so WebView hands the callback
+             * its JSON encoding — `"true"` WITH quotes — while a boolean
+             * result would arrive bare; both forms are accepted, as is
+             * surrounding whitespace. Anything else (null, "null",
+             * "error", garbage) is UNKNOWN, never NO_PASSWORD. Never throws.
+             */
+            fun fromProbeResult(result: String?): PasswordProbeResult {
+                val raw = result?.trim()?.removeSurrounding("\"")?.trim() ?: return UNKNOWN
+                return when (raw) {
+                    "true" -> HAS_PASSWORD
+                    "false" -> NO_PASSWORD
+                    else -> UNKNOWN // includes "error" and every unexpected value
+                }
+            }
+        }
+    }
+
+    /**
+     * Password-field probe (F05). Returns one of the strings "true",
+     * "false", or "error" — never a boolean, never throws to the caller.
+     * Walks the light DOM, recurses into every open shadow root, and
+     * descends into same-origin iframes via `contentDocument`; a
+     * cross-origin frame throws per frame and is skipped, so one blocked
+     * frame cannot kill the probe. Any unexpected error anywhere returns
+     * "error" ([PasswordProbeResult.UNKNOWN]). Closed shadow roots and
+     * cross-origin iframes are unreadable by design — see the class doc.
      */
     const val PASSWORD_FIELD_PROBE_JS =
-        "(function(){try{return document.querySelector('input[type=password]')!==null;}" +
-            "catch(e){return false;}})();"
+        "(function(){" +
+            "function scan(root){" +
+            "try{if(root.querySelector('input[type=password]'))return true;}" +
+            "catch(e){return false;}" +
+            "var els;" +
+            "try{els=root.querySelectorAll('*');}catch(e){return false;}" +
+            "for(var i=0;i<els.length;i++){" +
+            "var el=els[i];" +
+            "if(el.shadowRoot){if(scan(el.shadowRoot))return true;}" +
+            "if(el.tagName==='IFRAME'){" +
+            "try{var doc=el.contentDocument;if(doc&&scan(doc))return true;}" +
+            "catch(e){/* cross-origin frame: unreadable by design, skip */}" +
+            "}" +
+            "}" +
+            "return false;" +
+            "}" +
+            "try{return scan(document)?'true':'false';}" +
+            "catch(e){return 'error';}" +
+            "})();"
 
     /** Well-known payment/identity hosts (suffix match: the entry and all
-     *  its subdomains). Best-effort backstop — see the doc above. */
+     *  its subdomains). Curated backstop — see the doc above. Banks and
+     *  payment/crypto hosts first, then the identity hosts whose login
+     *  pages guard the most valuable accounts. */
     private val SENSITIVE_HOST_SUFFIXES = listOf(
         "paypal.com",
         "stripe.com",
@@ -97,6 +205,26 @@ object ExtensionRuntime {
         "revolut.com",
         "coinbase.com",
         "binance.com",
+        "kraken.com",
+        "venmo.com",
+        "chase.com",
+        "bankofamerica.com",
+        "wellsfargo.com",
+        "capitalone.com",
+        "americanexpress.com",
+        "hsbc.com",
+        "dbs.com",
+        "ocbc.com",
+        "uob.com",
+        "maybank2u.com.my",
+        "cimb.com",
+        "amazon.com",
+        "facebook.com",
+        "github.com",
+        "gitlab.com",
+        "icloud.com",
+        "outlook.live.com",
+        "proton.me",
         "accounts.google.com",
         "login.microsoftonline.com",
         "login.live.com",
@@ -112,12 +240,23 @@ object ExtensionRuntime {
         return SENSITIVE_HOST_SUFFIXES.any { suffix -> h == suffix || h.endsWith(".$suffix") }
     }
 
-    /** True when the page is sensitive: a known sensitive host, OR the page
-     *  contains a password field ([hasPasswordField] comes from
-     *  [PASSWORD_FIELD_PROBE_JS] at injection time). A null host with a
-     *  password field still counts as sensitive (fail closed). */
-    fun isSensitivePage(host: String?, hasPasswordField: Boolean): Boolean {
-        return hasPasswordField || isSensitiveHost(host)
+    /** True when the page is KNOWN sensitive: a known sensitive host, OR
+     *  the probe found a password field. UNKNOWN does NOT count here —
+     *  this is the built-in rule (see the class doc): first-party,
+     *  reviewed scripts keep running when the probe fails, gated only by
+     *  the host list. A null host with a password field still counts as
+     *  sensitive. */
+    fun isSensitivePage(host: String?, probe: PasswordProbeResult): Boolean {
+        return probe == PasswordProbeResult.HAS_PASSWORD || isSensitiveHost(host)
+    }
+
+    /** True when the page must be treated as sensitive for a USER-INSTALLED
+     *  script: a known sensitive host, a password field, OR an UNKNOWN
+     *  probe result (F05 fail closed — a page whose state we cannot
+     *  establish is treated as sensitive). This is the user-script rule;
+     *  built-ins use [isSensitivePage] instead. */
+    fun isSensitivePageForUserScripts(host: String?, probe: PasswordProbeResult): Boolean {
+        return probe != PasswordProbeResult.NO_PASSWORD || isSensitiveHost(host)
     }
 
     /** True when the user explicitly allowed [script] on a sensitive page
@@ -171,21 +310,66 @@ object ExtensionRuntime {
         }
     }
 
+    /**
+     * One-injection-per-navigation guard for the hook (AUDIT 2, F05-B).
+     * onPageFinished AND doUpdateVisitedHistory both fire per page load,
+     * so the hook needs a dedupe — but the old `Set<String>` of injected
+     * URLs never forgot a URL within one page load: an SPA navigation
+     * BACK to a URL injected earlier in the same load (YouTube back
+     * button to the previous video) was silently skipped, so user
+     * scripts never re-ran on that page. A single "last injected URL"
+     * dedupes the double-fire (same URL twice in a row) while still
+     * re-injecting when the page comes back to an earlier URL. One
+     * instance per WebView client (tabs never share one). [reset] is
+     * called from onPageStarted, i.e. on every full navigation. Pure
+     * Kotlin, JVM-tested.
+     */
+    class InjectionDedupe {
+        private var lastInjectedUrl: String? = null
+
+        /** True when [url] should be injected now (and records it). */
+        fun shouldInject(url: String): Boolean {
+            if (lastInjectedUrl == url) return false
+            lastInjectedUrl = url
+            return true
+        }
+
+        /** Forget the last URL — a full navigation starts fresh. */
+        fun reset() {
+            lastInjectedUrl = null
+        }
+    }
+
     /** Scripts matching [url] at the given [runAt], in injection order.
      *  Applies: enabled flag, @match, per-site off list, the sensitive-page
-     *  rule ([isSensitivePage] — [hasPasswordField] comes from
-     *  [PASSWORD_FIELD_PROBE_JS] at injection time), and the YouTube
-     *  skipper master switch. Never throws. */
+     *  rule, and the YouTube skipper master switch. The sensitive rule is
+     *  per script KIND (F05, see the class doc): user-installed scripts
+     *  are blocked on [PasswordProbeResult.UNKNOWN] (fail closed),
+     *  built-ins are not. [probe] comes from
+     *  [PasswordProbeResult.fromProbeResult] applied to the
+     *  [PASSWORD_FIELD_PROBE_JS] callback value; the default is UNKNOWN,
+     *  so a caller that forgets the probe fails closed for user scripts.
+     *  Never throws.
+     *
+     *  Decision table (host not explicitly allowed):
+     *  | probe            | user script | built-in script |
+     *  | NO_PASSWORD      | runs        | runs            |
+     *  | HAS_PASSWORD     | blocked     | blocked         |
+     *  | UNKNOWN          | BLOCKED     | runs            |
+     *  | sensitive host (any probe) | blocked | blocked |
+     *  An explicit per-host allow overrides every row. */
     fun scriptsForRunAt(
         scripts: List<Userscript>,
         url: String,
         runAt: RunAt,
         youtubeSkipperEnabled: Boolean = true,
-        hasPasswordField: Boolean = false
+        probe: PasswordProbeResult = PasswordProbeResult.UNKNOWN
     ): List<ScriptToInject> {
         val host = UrlUtils.extractHost(url)
-        val sensitive = isSensitivePage(host, hasPasswordField)
         return scripts.filter { script ->
+            // F05: the sensitive-page rule depends on the script kind.
+            val sensitive = if (script.builtIn) isSensitivePage(host, probe)
+            else isSensitivePageForUserScripts(host, probe)
             script.enabled &&
                 script.runAt == runAt &&
                 (script.id != YOUTUBE_SKIPPER_ID || youtubeSkipperEnabled) &&
@@ -199,16 +383,18 @@ object ExtensionRuntime {
      *  then document-end. This is what the injection hook calls — WebView
      *  offers no true document-start hook, so both groups run at
      *  onPageFinished / doUpdateVisitedHistory (see the class doc).
-     *  [hasPasswordField] is the [PASSWORD_FIELD_PROBE_JS] result for this
-     *  page; pass false only when the probe could not run. */
+     *  [probe] is the [PASSWORD_FIELD_PROBE_JS] result for this page,
+     *  mapped through [PasswordProbeResult.fromProbeResult]; it defaults
+     *  to UNKNOWN (fail closed for user scripts) — never pass a boolean
+     *  default and never invent NO_PASSWORD when the probe did not run. */
     fun scriptsForUrl(
         scripts: List<Userscript>,
         url: String,
         youtubeSkipperEnabled: Boolean = true,
-        hasPasswordField: Boolean = false
+        probe: PasswordProbeResult = PasswordProbeResult.UNKNOWN
     ): List<ScriptToInject> {
-        return scriptsForRunAt(scripts, url, RunAt.DOCUMENT_START, youtubeSkipperEnabled, hasPasswordField) +
-            scriptsForRunAt(scripts, url, RunAt.DOCUMENT_END, youtubeSkipperEnabled, hasPasswordField)
+        return scriptsForRunAt(scripts, url, RunAt.DOCUMENT_START, youtubeSkipperEnabled, probe) +
+            scriptsForRunAt(scripts, url, RunAt.DOCUMENT_END, youtubeSkipperEnabled, probe)
     }
 
     /**

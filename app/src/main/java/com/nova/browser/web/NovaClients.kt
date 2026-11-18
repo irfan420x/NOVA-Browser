@@ -127,11 +127,20 @@ class NovaWebViewClient(
         return when (request.url.scheme?.lowercase()) {
             "http", "https" -> {
                 // HTTPS-only upgrade on navigation (not just on typed input).
+                // AUDIT 2 (F01-A): only upgrade via loadUrl when the
+                // navigation has no body to lose (GET/HEAD). A POST form
+                // submission returns false here so the request reaches
+                // shouldInterceptRequest, where HttpsEnforcer upgrades
+                // it with a method-preserving 307 instead of silently
+                // turning it into a GET and dropping the submission.
                 if (state.settings.httpsOnly && UrlUtils.shouldUpgradeToHttps(url) &&
-                    !state.settings.isHttpsException(UrlUtils.extractHost(url))
+                    !state.settings.isHttpsException(UrlUtils.extractHost(url)) &&
+                    HttpsEnforcer.canUpgradeViaLoadUrl(request.method)
                 ) {
+                    val httpsUrl = url.replaceFirst("http://", "https://", ignoreCase = true)
                     tab.wasUpgradedFromHttp = true
-                    view.loadUrl(url.replaceFirst("http://", "https://", ignoreCase = true))
+                    tab.upgradedFromHttpUrl = httpsUrl
+                    view.loadUrl(httpsUrl)
                     true
                 } else {
                     false // let the WebView load it
@@ -142,31 +151,71 @@ class NovaWebViewClient(
                 true
             }
             "intent" -> {
-                host.openExternal(parseIntentUrl(url) ?: return true)
-                true
+                // F02: validate before launching. The URL string is
+                // launched exactly as validated — never rebuild an
+                // Intent from fields. Shared launch path for Allow and
+                // for NeedsConfirmation + Allow: the confirmation tap
+                // IS the gesture, so onAllow launches from the
+                // already-validated decision and must NOT re-validate
+                // (a package-without-fallback intent re-validates to
+                // NeedsConfirmation even with a gesture, and
+                // re-validating would silently do nothing after the
+                // user tapped Allow).
+                // AUDIT 2 (F02-A): the launch/fallback split lives in
+                // IntentValidator.launchAction — a package-only intent
+                // (package + fallback, no data) must TRY the app first,
+                // not load the fallback outright.
+                fun launchValidated(dataUri: String?, fallbackUrl: String?, packageName: String?) {
+                    when (val action = IntentValidator.launchAction(dataUri, fallbackUrl, packageName)) {
+                        is IntentValidator.LaunchAction.LoadFallback -> {
+                            view.loadUrl(action.url)
+                            return
+                        }
+                        IntentValidator.LaunchAction.LaunchApp -> { /* try the app below */ }
+                    }
+                    val intent = try {
+                        Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
+                    } catch (e: Exception) {
+                        ErrorLog.log(state.context, "Browser", "Bad intent:// URL: $url", e)
+                        return
+                    }
+                    // Try the app first; if it is missing
+                    // (openExternal returns false on
+                    // ActivityNotFoundException), load the validated
+                    // http(s) fallback in the browser instead.
+                    // Try-launch-then-fallback, NOT resolveActivity: on
+                    // Android 11+ resolveActivity false-negatives for
+                    // packages the app cannot see.
+                    val launched = host.openExternal(intent)
+                    if (!launched && fallbackUrl != null) {
+                        view.loadUrl(fallbackUrl)
+                    }
+                }
+                when (val decision = IntentValidator.validate(url, request.hasGesture())) {
+                    is IntentValidator.Decision.Allow -> {
+                        launchValidated(decision.intent.dataUri, decision.intent.fallbackUrl, decision.intent.packageName)
+                        true
+                    }
+                    is IntentValidator.Decision.NeedsConfirmation -> {
+                        host.confirmExternalIntent(
+                            packageName = decision.packageName,
+                            fallbackUrl = decision.fallbackUrl,
+                            originalUrl = url,
+                            onAllow = { launchValidated(decision.dataUri, decision.fallbackUrl, decision.packageName) }
+                        )
+                        true
+                    }
+                    is IntentValidator.Decision.Reject -> {
+                        ErrorLog.log(state.context, "Browser", "Blocked intent:// URL (${decision.reason}): $url")
+                        true
+                    }
+                }
             }
             "market" -> {
                 host.openExternal(Intent(Intent.ACTION_VIEW, request.url))
                 true
             }
             else -> false
-        }
-    }
-
-    /** Try to turn an intent:// URL into a launchable Intent, falling back
-     *  to its browser_fallback_url or the Play Store page. */
-    private fun parseIntentUrl(url: String): Intent? {
-        return try {
-            val intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
-            val fallback = intent.getStringExtra("browser_fallback_url")
-            if (intent.`package` != null) intent else if (fallback != null) {
-                Intent(Intent.ACTION_VIEW, Uri.parse(fallback))
-            } else {
-                intent
-            }
-        } catch (e: Exception) {
-            ErrorLog.log(state.context, "Browser", "Bad intent:// URL: $url", e)
-            null
         }
     }
 
@@ -203,6 +252,61 @@ class NovaWebViewClient(
             val isPost = request.method == "POST"
             view.post { tab.wasPost = isPost }
         }
+        // F01 (v2.2): HTTPS-only enforcement at the intercept level. Runs
+        // BEFORE the ad-block early returns below (they would let http
+        // through when ad-block is off, and main-frame requests return
+        // early there). Covers every method, not just GET — a POST to
+        // http:// upgrades via 307, which preserves the method.
+        // decideForRequest reads tab.url (main-thread-maintained, safe
+        // here) to spot an https -> http downgrade redirect; never
+        // view.url (background thread — the v1.0 crash). Uses the existing
+        // finish(), so both outcomes flow through DevToolsHub.recordNetwork
+        // automatically.
+        when (HttpsEnforcer.decideForRequest(
+            url = request.url.toString(),
+            httpsOnly = state.settings.httpsOnly,
+            httpsExceptionHosts = state.settings.httpsExceptionHosts,
+            isForMainFrame = request.isForMainFrame,
+            pageUrl = tab.url,
+            method = request.method
+        )) {
+            HttpsEnforcer.HttpsDecision.ALLOW -> { /* fall through to ad-block below */ }
+            HttpsEnforcer.HttpsDecision.UPGRADE -> {
+                val httpsUrl = HttpsEnforcer.upgradeUrl(request.url.toString())
+                    ?: return finish(
+                        true, "HTTPS_BLOCK",
+                        WebResourceResponse("text/plain", "UTF-8", ByteArrayInputStream(ByteArray(0)))
+                    )
+                // Main-frame redirect upgrade: the page itself was
+                // upgraded, so the "load http anyway" affordance applies.
+                // Sub-resource upgrades must NOT set this. view.post:
+                // tab state is main-thread state.
+                if (request.isForMainFrame) view.post {
+                    tab.wasUpgradedFromHttp = true
+                    tab.upgradedFromHttpUrl = httpsUrl
+                }
+                return finish(
+                    true, "HTTPS_UPGRADE",
+                    WebResourceResponse(
+                        "text/plain", "UTF-8",
+                        HttpsEnforcer.REDIRECT_STATUS_CODE,
+                        HttpsEnforcer.REDIRECT_REASON_PHRASE,
+                        HttpsEnforcer.redirectHeaders(httpsUrl),
+                        ByteArrayInputStream(ByteArray(0))
+                    )
+                )
+            }
+            HttpsEnforcer.HttpsDecision.BLOCK -> {
+                ErrorLog.log(
+                    state.context, "Browser",
+                    "HTTPS-only blocked plain-http request: ${request.url}"
+                )
+                return finish(
+                    true, "HTTPS_BLOCK",
+                    WebResourceResponse("text/plain", "UTF-8", ByteArrayInputStream(ByteArray(0)))
+                )
+            }
+        }
         // Ad-block layer 1 — network filter. Only GET sub-resource requests
         // over http(s); the main frame is never blocked, and POST bodies
         // are never swallowed.
@@ -234,6 +338,18 @@ class NovaWebViewClient(
         // about:blank is the home screen — keep the tab URL blank for it.
         tab.url = if (url == "about:blank") "" else url
         tab.error = null
+        // AUDIT 2 (F01-B): the upgrade flag belongs to one navigation
+        // only. A load of any other URL (link to a plain https page,
+        // back/forward, a redirect target) drops it, so the error
+        // overlay never offers "Load with HTTP anyway" for a page
+        // that was never upgraded. A reload of the upgraded URL
+        // itself keeps it (HttpsEnforcer.isUpgradedTarget).
+        if (tab.upgradedFromHttpUrl != null &&
+            !HttpsEnforcer.isUpgradedTarget(tab.upgradedFromHttpUrl, url)
+        ) {
+            tab.wasUpgradedFromHttp = false
+            tab.upgradedFromHttpUrl = null
+        }
         tab.blockedAds = 0
         tab.blockedTrackers = 0
         tab.sslHandler = null
@@ -243,7 +359,7 @@ class NovaWebViewClient(
         tab.canGoBack = view.canGoBack()
         tab.canGoForward = view.canGoForward()
         // B-2: a new navigation resets the injection dedupe set (below).
-        injectedForUrls.clear()
+        injectionDedupe.reset()
         // W4: per-site settings for the new host — JS off / desktop mode
         // apply from this load, not only when the sheet changes them.
         // (The UA change takes effect for subsequent requests; the JS
@@ -352,13 +468,15 @@ class NovaWebViewClient(
     // toggle AND the sensitive-page rule. The old call sites bypassed S-1
     // (they ran the skipper on YouTube login pages).
 
-    /** B-2: URLs already injected for this navigation. onPageFinished
-     *  AND doUpdateVisitedHistory both fire per page load — without this
-     *  set every user script would inject twice (double buttons, double
-     *  handlers). Built-ins are safe either way (their own __nova guards),
-     *  but user scripts get no guard. Cleared in onPageStarted; SPA
-     *  navigations bring a new URL, so they still re-inject once. */
-    private val injectedForUrls = mutableSetOf<String>()
+    /** B-2: last URL injected for this navigation. onPageFinished
+     *  AND doUpdateVisitedHistory both fire per page load — without
+     *  this, every user script would inject twice (double buttons,
+     *  double handlers). Built-ins are safe either way (their own
+     *  __nova guards), but user scripts get no guard. Reset in
+     *  onPageStarted; SPA navigations bring a new URL, so they still
+     *  re-inject once — and navigating BACK to an earlier SPA URL
+     *  re-injects too (AUDIT 2 F05-B: the old set never forgot it). */
+    private val injectionDedupe = ExtensionRuntime.InjectionDedupe()
 
     /** Inject NOVA Extensions userscripts (v2.0 W2). Two-phase: (1) probe
      *  the page for a password field — a page with one is a sensitive page
@@ -367,8 +485,8 @@ class NovaWebViewClient(
      *  built-ins only (W6 S-5). Main thread, so evaluateJavascript is legal. */
     private fun injectExtensions(view: WebView, url: String) {
         if (!UrlUtils.isHttpUrl(url)) return
-        // B-2: one injection per URL per navigation.
-        if (!injectedForUrls.add(url)) return
+        // B-2: one injection per URL per navigation (see injectionDedupe).
+        if (!injectionDedupe.shouldInject(url)) return
         val context = view.context
         val scripts = try {
             ExtensionStore.loadEffectiveScripts(context, state.settings.youtubeAdSkipper) { asset ->
@@ -384,19 +502,20 @@ class NovaWebViewClient(
                 // into page B (including a sensitive page B). Drop the
                 // injection when the WebView has moved on.
                 if (view.url != url) return@evaluateJavascript
-                if (result == null) {
-                    // Probe failure is fail-open by design (the host list
-                    // still protects known sensitive hosts) — but log it
-                    // distinctly instead of silently passing false.
+                val probe = ExtensionRuntime.PasswordProbeResult.fromProbeResult(result)
+                if (probe == ExtensionRuntime.PasswordProbeResult.UNKNOWN) {
+                    // F05 fail closed: user scripts are blocked for this
+                    // page; built-ins still run unless the host is
+                    // sensitive. Log distinctly so a probe outage is
+                    // visible instead of silent.
                     ErrorLog.log(
                         state.context, "Extensions",
-                        "Password-field probe failed for $url — sensitive gating fell back to the host list",
+                        "Password-field probe inconclusive for $url — user scripts blocked (fail closed), built-ins gated by host list only",
                         null
                     )
                 }
-                val hasPasswordField = result?.trim() == "true"
                 val toInject = try {
-                    ExtensionRuntime.scriptsForUrl(scripts, url, state.settings.youtubeAdSkipper, hasPasswordField)
+                    ExtensionRuntime.scriptsForUrl(scripts, url, state.settings.youtubeAdSkipper, probe)
                 } catch (_: Exception) { emptyList() }
                 for (script in toInject) {
                     try { view.evaluateJavascript(script.source, null) } catch (_: Exception) { }

@@ -442,6 +442,7 @@ class BrowserState(
             upgraded = true
         }
         tab.wasUpgradedFromHttp = upgraded
+        tab.upgradedFromHttpUrl = if (upgraded) url else null
         tab.url = url
         tab.error = null
         // The load below is the initial load for this URL — mark it so
@@ -470,6 +471,7 @@ class BrowserState(
         tab.title = ""
         tab.error = null
         tab.wasUpgradedFromHttp = false
+        tab.upgradedFromHttpUrl = null
         try {
             tab.webView?.loadUrl("about:blank")
         } catch (_: Exception) { }
@@ -488,6 +490,7 @@ class BrowserState(
         settings.addHttpsException(host)
         val httpUrl = tab.url.replaceFirst("https://", "http://", ignoreCase = true)
         tab.wasUpgradedFromHttp = false
+        tab.upgradedFromHttpUrl = null
         tab.url = httpUrl
         tab.error = null
         tab.initialUrlLoaded = true

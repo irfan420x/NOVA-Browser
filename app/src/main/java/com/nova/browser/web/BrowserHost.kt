@@ -17,6 +17,7 @@ import android.webkit.WebChromeClient
 import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.nova.browser.PrivateActivity
 import com.nova.browser.data.CustomDownload
 import com.nova.browser.data.Downloader
@@ -65,7 +66,12 @@ class BrowserHost(
     }
 
     private var pendingUploadCallback: ValueCallback<Array<Uri>>? = null
-    private var pendingPermissionRequest: PermissionRequest? = null
+    // F03: permission requests go through a FIFO queue (one entry per
+    // request, decided by id) instead of a single pending variable.
+    private val permissionQueue = PermissionQueue()
+    private val livePermissionRequests = mutableMapOf<Long, PermissionRequest>()
+    private var pendingAndroidPermissionEntryId: Long? = null
+    private var pendingIntentDialog: AlertDialog? = null
 
     /** Create a WebView for a tab and wire it up (settings, clients,
      *  download listener, find listener). */
@@ -236,29 +242,75 @@ class BrowserHost(
     }
 
     override fun onPermissionRequest(request: PermissionRequest) {
-        val androidPerms = mutableListOf<String>()
-        if (request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)) {
-            androidPerms.add(Manifest.permission.CAMERA)
-        }
-        if (request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)) {
-            androidPerms.add(Manifest.permission.RECORD_AUDIO)
-        }
-        if (androidPerms.isEmpty()) {
-            // Protected media ID and similar need no Android permission.
-            request.grant(request.resources)
+        // F03: every request is enqueued and decided by id. Non-allowlisted
+        // resources (PROTECTED_MEDIA_ID, unknown/future strings, empty
+        // lists) are DENIED at enqueue — the old code auto-granted them.
+        val entry = permissionQueue.enqueue(request.origin.toString(), request.resources.toList())
+        if (entry.decision == PermissionDecision.DENIED) {
+            permissionQueue.pruneDecided()
+            try { request.deny() } catch (_: Exception) { }
             return
         }
-        pendingPermissionRequest = request
+        livePermissionRequests[entry.id] = request
+        processNextPermissionRequest()
+    }
+
+    private fun processNextPermissionRequest() {
+        // One permission flow at a time: never start the next entry while
+        // an Android runtime-permission request is in flight or a
+        // confirmation dialog is awaiting the user — otherwise the system
+        // dialog gets re-fired for the same entry and dialogs stack.
+        // finishPermissionEntry() re-runs this when the current entry
+        // resolves, so waiting entries are not stuck.
+        if (pendingAndroidPermissionEntryId != null) return
+        if (permissionQueue.all().any { it.decision == PermissionDecision.AWAITING_USER }) return
+        val entry = permissionQueue.nextNeedingAndroid() ?: return
+        val needed = entry.androidPermissionsNeeded
+        val alreadyGranted = needed.filter { perm ->
+            ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
+        }.toSet()
+        if (alreadyGranted.size == needed.size) { onQueuedAndroidResult(entry.id, alreadyGranted); return }
+        pendingAndroidPermissionEntryId = entry.id
         try {
-            ActivityCompat.requestPermissions(
-                activity, androidPerms.toTypedArray(), PERMISSION_REQUEST_CODE
-            )
+            ActivityCompat.requestPermissions(activity, needed.toTypedArray(), PERMISSION_REQUEST_CODE)
         } catch (_: Exception) {
-            // Activity finishing or permission request not possible now —
-            // deny the page request instead of leaving it hanging.
-            pendingPermissionRequest = null
-            try { request.deny() } catch (_: Exception) { }
+            pendingAndroidPermissionEntryId = null
+            finishPermissionEntry(entry.id, granted = emptyList())
         }
+    }
+
+    private fun onQueuedAndroidResult(entryId: Long, grantedAndroidPermissions: Set<String>) {
+        val entry = permissionQueue.applyAndroidResult(entryId, grantedAndroidPermissions) ?: return
+        when (entry.decision) {
+            PermissionDecision.DENIED -> finishPermissionEntry(entryId, granted = emptyList())
+            PermissionDecision.AWAITING_USER -> {
+                val message = entry.confirmationMessage()
+                    ?: run { finishPermissionEntry(entryId, granted = emptyList()); return }
+                try {
+                    AlertDialog.Builder(context)
+                        .setTitle("Allow camera / microphone?")
+                        .setMessage(message)
+                        .setPositiveButton("Allow") { _, _ ->
+                            finishPermissionEntry(entryId, permissionQueue.resolveUserDecision(entryId, allow = true)) }
+                        .setNegativeButton("Don't allow") { _, _ ->
+                            finishPermissionEntry(entryId, permissionQueue.resolveUserDecision(entryId, allow = false)) }
+                        .setOnCancelListener {
+                            finishPermissionEntry(entryId, permissionQueue.resolveUserDecision(entryId, allow = false)) }
+                        .show()
+                } catch (_: Exception) {
+                    finishPermissionEntry(entryId, permissionQueue.resolveUserDecision(entryId, allow = false))
+                }
+            }
+            else -> { /* PENDING_ANDROID cannot occur here */ }
+        }
+    }
+
+    private fun finishPermissionEntry(entryId: Long, granted: List<String>) {
+        val request = livePermissionRequests.remove(entryId) ?: return
+        try { if (granted.isEmpty()) request.deny() else request.grant(granted.toTypedArray()) }
+        catch (_: Exception) { }
+        permissionQueue.pruneDecided()
+        processNextPermissionRequest() // FIFO: start the next waiting request, if any
     }
 
     override fun onGeolocation(origin: String, callback: GeolocationPermissions.Callback) {
@@ -298,6 +350,64 @@ class BrowserHost(
         } catch (_: ActivityNotFoundException) {
             state.status("No app can open this link")
             false
+        } catch (e: Exception) {
+            // AUDIT 2 (F02-B): startActivity can also throw
+            // SecurityException (e.g. a crafted intent resolving to a
+            // non-exported activity) and other RuntimeExceptions.
+            // The old code caught only ActivityNotFoundException, so
+            // such an intent propagated out of
+            // shouldOverrideUrlLoading — a page-driven crash (DoS).
+            // Any launch failure is "not launched", never a crash.
+            ErrorLog.log(context, "Browser", "External intent launch failed", e)
+            state.status("No app can open this link")
+            false
+        }
+    }
+
+    override fun confirmExternalIntent(
+        packageName: String?,
+        fallbackUrl: String?,
+        originalUrl: String,
+        onAllow: () -> Unit
+    ) {
+        // F02: only the latest prompt is live — dismiss any earlier one
+        // instead of stacking dialogs.
+        try { pendingIntentDialog?.dismiss() } catch (_: Exception) { }
+        pendingIntentDialog = null
+        val message = buildString {
+            if (packageName != null) {
+                append("This page wants to open\n\n$packageName\n\nfrom:\n$originalUrl")
+            } else {
+                append("This page wants to open an external app\n\nfrom:\n$originalUrl")
+            }
+            if (fallbackUrl != null) {
+                append("\n\nIf the app isn't installed, its web page will open instead:\n$fallbackUrl")
+            }
+        }
+        try {
+            val dialog = AlertDialog.Builder(context)
+                .setTitle("Open in another app?")
+                .setMessage(message)
+                .setPositiveButton("Allow") { _, _ ->
+                    pendingIntentDialog = null
+                    try { onAllow() } catch (e: Exception) {
+                        ErrorLog.log(context, "Browser", "External intent launch failed", e)
+                    }
+                }
+                .setNegativeButton("Don't allow") { _, _ ->
+                    pendingIntentDialog = null
+                    state.status("External app not opened")
+                }
+                .setOnCancelListener {
+                    pendingIntentDialog = null
+                    state.status("External app not opened")
+                }
+                .show()
+            pendingIntentDialog = dialog
+        } catch (_: Exception) {
+            // Activity finishing — answer "no" instead of crashing.
+            pendingIntentDialog = null
+            state.status("External app not opened")
         }
     }
 
@@ -329,20 +439,12 @@ class BrowserHost(
         grantResults: IntArray
     ) {
         if (requestCode != PERMISSION_REQUEST_CODE) return
-        val request = pendingPermissionRequest ?: return
-        pendingPermissionRequest = null
-        val granted = request.resources.filter { resource ->
-            val androidPerm = when (resource) {
-                PermissionRequest.RESOURCE_VIDEO_CAPTURE -> Manifest.permission.CAMERA
-                PermissionRequest.RESOURCE_AUDIO_CAPTURE -> Manifest.permission.RECORD_AUDIO
-                else -> null // needs no Android permission — grant it
-            }
-            androidPerm == null || run {
-                val index = permissions.indexOf(androidPerm)
-                index >= 0 && grantResults[index] == PackageManager.PERMISSION_GRANTED
-            }
-        }.toTypedArray()
-        if (granted.isEmpty()) request.deny() else request.grant(granted)
+        val entryId = pendingAndroidPermissionEntryId ?: return
+        pendingAndroidPermissionEntryId = null
+        val granted = permissions.filterIndexed { i, _ ->
+            i < grantResults.size && grantResults[i] == PackageManager.PERMISSION_GRANTED
+        }.toSet()
+        onQueuedAndroidResult(entryId, granted)
     }
 
     // ---- Default browser role ----

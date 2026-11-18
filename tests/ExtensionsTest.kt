@@ -10,6 +10,10 @@ package com.nova.browser.extensions
  * (incl. subdomain / negative cases), run-at filtering + ordering,
  * per-site on/off, the YouTube skipper master switch, install validation
  * and the 200 KB size cap, and the built-in registry.
+ * F05 (v2.2): tri-state password probe (fail closed for user scripts),
+ * probe-result mapping, shadow-DOM/iframe probe JS structure, the
+ * expanded ~30-entry sensitive host list, and the documented
+ * post-injection dynamic-field residual.
  */
 
 private var passed = 0
@@ -148,11 +152,11 @@ fun main() {
     val endScript = scriptWith(id = "end", runAt = RunAt.DOCUMENT_END)
     val both = listOf(endScript, startScript) // deliberately end-first in the list
     check("document-start filter returns only start scripts",
-        ExtensionRuntime.scriptsForRunAt(both, "https://example.com/", RunAt.DOCUMENT_START).map { it.id } == listOf("start"))
+        ExtensionRuntime.scriptsForRunAt(both, "https://example.com/", RunAt.DOCUMENT_START, probe = ExtensionRuntime.PasswordProbeResult.NO_PASSWORD).map { it.id } == listOf("start"))
     check("document-end filter returns only end scripts",
-        ExtensionRuntime.scriptsForRunAt(both, "https://example.com/", RunAt.DOCUMENT_END).map { it.id } == listOf("end"))
+        ExtensionRuntime.scriptsForRunAt(both, "https://example.com/", RunAt.DOCUMENT_END, probe = ExtensionRuntime.PasswordProbeResult.NO_PASSWORD).map { it.id } == listOf("end"))
     check("scriptsForUrl orders document-start before document-end",
-        ExtensionRuntime.scriptsForUrl(both, "https://example.com/").map { it.id } == listOf("start", "end"))
+        ExtensionRuntime.scriptsForUrl(both, "https://example.com/", probe = ExtensionRuntime.PasswordProbeResult.NO_PASSWORD).map { it.id } == listOf("start", "end"))
     check("non-matching URL returns nothing",
         ExtensionRuntime.scriptsForUrl(
             listOf(scriptWith(matches = listOf("*://example.com/*"))),
@@ -167,9 +171,9 @@ fun main() {
     check("disabled host blocks its subdomains",
         ExtensionRuntime.scriptsForUrl(listOf(perSite), "https://www.example.com/").isEmpty())
     check("disabled host does not block other hosts",
-        ExtensionRuntime.scriptsForUrl(listOf(perSite), "https://other.org/").size == 1)
+        ExtensionRuntime.scriptsForUrl(listOf(perSite), "https://other.org/", probe = ExtensionRuntime.PasswordProbeResult.NO_PASSWORD).size == 1)
     check("disabled host does not block suffix lookalike",
-        ExtensionRuntime.scriptsForUrl(listOf(perSite), "https://fakeexample.com/").size == 1)
+        ExtensionRuntime.scriptsForUrl(listOf(perSite), "https://fakeexample.com/", probe = ExtensionRuntime.PasswordProbeResult.NO_PASSWORD).size == 1)
     check("isEnabledForHost: null host is enabled",
         ExtensionRuntime.isEnabledForHost(perSite, null))
     check("isEnabledForHost: exact disabled host is off",
@@ -182,7 +186,11 @@ fun main() {
     // --- YouTube skipper master switch ---
     val skipper = scriptWith(
         id = ExtensionRuntime.YOUTUBE_SKIPPER_ID, name = "YouTube Ad Skipper",
-        matches = listOf("*://youtube.com/*", "*://*.youtube.com/*", "*://youtu.be/*")
+        matches = listOf("*://youtube.com/*", "*://*.youtube.com/*", "*://youtu.be/*"),
+        // F05: the real skipper is registry-owned (builtIn = true) — the
+        // fixture must say so, or the UNKNOWN probe blocks it as a user
+        // script and the toggle tests below fail for the wrong reason.
+        builtIn = true
     )
     check("skipper runs on YouTube when toggle is on",
         ExtensionRuntime.scriptsForUrl(listOf(skipper), "https://www.youtube.com/watch?v=x").size == 1)
@@ -292,17 +300,17 @@ fun main() {
     check("blank host is NOT sensitive", !ExtensionRuntime.isSensitiveHost("  "))
     check("sensitive host is case-insensitive", ExtensionRuntime.isSensitiveHost("PayPal.COM"))
     check("password field makes any page sensitive",
-        ExtensionRuntime.isSensitivePage("example.com", true))
+        ExtensionRuntime.isSensitivePage("example.com", ExtensionRuntime.PasswordProbeResult.HAS_PASSWORD))
     check("non-sensitive host without password field is not sensitive",
-        !ExtensionRuntime.isSensitivePage("example.com", false))
+        !ExtensionRuntime.isSensitivePage("example.com", ExtensionRuntime.PasswordProbeResult.NO_PASSWORD))
     check("null host with password field is sensitive",
-        ExtensionRuntime.isSensitivePage(null, true))
+        ExtensionRuntime.isSensitivePage(null, ExtensionRuntime.PasswordProbeResult.HAS_PASSWORD))
 
     val wideScript = scriptWith(matches = listOf("*://*/*"))
     check("user script runs on a normal page",
-        ExtensionRuntime.scriptsForUrl(listOf(wideScript), "https://example.com/").size == 1)
+        ExtensionRuntime.scriptsForUrl(listOf(wideScript), "https://example.com/", probe = ExtensionRuntime.PasswordProbeResult.NO_PASSWORD).size == 1)
     check("user script does NOT run on a page with a password field",
-        ExtensionRuntime.scriptsForUrl(listOf(wideScript), "https://example.com/login", hasPasswordField = true).isEmpty())
+        ExtensionRuntime.scriptsForUrl(listOf(wideScript), "https://example.com/login", probe = ExtensionRuntime.PasswordProbeResult.HAS_PASSWORD).isEmpty())
     check("user script does NOT run on a known sensitive host",
         ExtensionRuntime.scriptsForUrl(listOf(wideScript), "https://paypal.com/signin").isEmpty())
     check("user script does NOT run on a sensitive subdomain",
@@ -313,19 +321,19 @@ fun main() {
     )
     check("explicitly allowed host runs on its password page",
         ExtensionRuntime.scriptsForUrl(
-            listOf(allowedScript), "https://example.com/login", hasPasswordField = true
+            listOf(allowedScript), "https://example.com/login", probe = ExtensionRuntime.PasswordProbeResult.HAS_PASSWORD
         ).size == 1)
     check("explicit allow covers subdomains of the allowed host",
         ExtensionRuntime.scriptsForUrl(
-            listOf(allowedScript), "https://sub.example.com/login", hasPasswordField = true
+            listOf(allowedScript), "https://sub.example.com/login", probe = ExtensionRuntime.PasswordProbeResult.HAS_PASSWORD
         ).size == 1)
     check("explicit allow does NOT cover other hosts",
         ExtensionRuntime.scriptsForUrl(
-            listOf(allowedScript), "https://other.org/login", hasPasswordField = true
+            listOf(allowedScript), "https://other.org/login", probe = ExtensionRuntime.PasswordProbeResult.HAS_PASSWORD
         ).isEmpty())
     check("explicit allow does NOT cover suffix lookalikes",
         ExtensionRuntime.scriptsForUrl(
-            listOf(allowedScript), "https://fakeexample.com/login", hasPasswordField = true
+            listOf(allowedScript), "https://fakeexample.com/login", probe = ExtensionRuntime.PasswordProbeResult.HAS_PASSWORD
         ).isEmpty())
     check("isHostAllowedForSensitive: null host is not allowed",
         !ExtensionRuntime.isHostAllowedForSensitive(allowedScript, null))
@@ -334,13 +342,136 @@ fun main() {
         matches = listOf("*://*/*"), builtIn = true
     )
     check("built-in cookie hider is ALSO blocked on a password page",
-        ExtensionRuntime.scriptsForUrl(listOf(hider), "https://example.com/login", hasPasswordField = true).isEmpty())
+        ExtensionRuntime.scriptsForUrl(listOf(hider), "https://example.com/login", probe = ExtensionRuntime.PasswordProbeResult.HAS_PASSWORD).isEmpty())
     check("built-in cookie hider runs on a normal page",
         ExtensionRuntime.scriptsForUrl(listOf(hider), "https://example.com/").size == 1)
     check("skipper is blocked on a YouTube page with a password field",
-        ExtensionRuntime.scriptsForUrl(listOf(skipper), "https://www.youtube.com/signin", hasPasswordField = true).isEmpty())
+        ExtensionRuntime.scriptsForUrl(listOf(skipper), "https://www.youtube.com/signin", probe = ExtensionRuntime.PasswordProbeResult.HAS_PASSWORD).isEmpty())
     check("skipper runs on bare youtube.com (W6 nit fix)",
         ExtensionRuntime.scriptsForUrl(listOf(skipper), "https://youtube.com/watch?v=x").size == 1)
+
+    // --- F05 (v2.2): tri-state probe, FAIL CLOSED ---
+    // Mapping: raw evaluateJavascript callback -> tri-state. The probe
+    // returns a JS string, so WebView hands the callback its JSON
+    // encoding ("true" WITH quotes); bare booleans are accepted too.
+    check("probe mapping: bare 'true' is HAS_PASSWORD",
+        ExtensionRuntime.PasswordProbeResult.fromProbeResult("true") == ExtensionRuntime.PasswordProbeResult.HAS_PASSWORD)
+    check("probe mapping: JSON-quoted '\"true\"' is HAS_PASSWORD",
+        ExtensionRuntime.PasswordProbeResult.fromProbeResult("\"true\"") == ExtensionRuntime.PasswordProbeResult.HAS_PASSWORD)
+    check("probe mapping: ' true ' with whitespace is HAS_PASSWORD",
+        ExtensionRuntime.PasswordProbeResult.fromProbeResult("  true  ") == ExtensionRuntime.PasswordProbeResult.HAS_PASSWORD)
+    check("probe mapping: bare 'false' is NO_PASSWORD",
+        ExtensionRuntime.PasswordProbeResult.fromProbeResult("false") == ExtensionRuntime.PasswordProbeResult.NO_PASSWORD)
+    check("probe mapping: JSON-quoted '\"false\"' is NO_PASSWORD",
+        ExtensionRuntime.PasswordProbeResult.fromProbeResult("\"false\"") == ExtensionRuntime.PasswordProbeResult.NO_PASSWORD)
+    check("probe mapping: null is UNKNOWN (never NO_PASSWORD)",
+        ExtensionRuntime.PasswordProbeResult.fromProbeResult(null) == ExtensionRuntime.PasswordProbeResult.UNKNOWN)
+    check("probe mapping: 'error' is UNKNOWN",
+        ExtensionRuntime.PasswordProbeResult.fromProbeResult("error") == ExtensionRuntime.PasswordProbeResult.UNKNOWN)
+    check("probe mapping: JSON-quoted '\"error\"' is UNKNOWN",
+        ExtensionRuntime.PasswordProbeResult.fromProbeResult("\"error\"") == ExtensionRuntime.PasswordProbeResult.UNKNOWN)
+    check("probe mapping: 'null' string is UNKNOWN",
+        ExtensionRuntime.PasswordProbeResult.fromProbeResult("null") == ExtensionRuntime.PasswordProbeResult.UNKNOWN)
+    check("probe mapping: garbage is UNKNOWN",
+        ExtensionRuntime.PasswordProbeResult.fromProbeResult("maybe") == ExtensionRuntime.PasswordProbeResult.UNKNOWN)
+    check("probe mapping: empty string is UNKNOWN",
+        ExtensionRuntime.PasswordProbeResult.fromProbeResult("") == ExtensionRuntime.PasswordProbeResult.UNKNOWN)
+
+    // Tri-state sensitivity: UNKNOWN is sensitive for user scripts only.
+    check("UNKNOWN probe is sensitive for user scripts",
+        ExtensionRuntime.isSensitivePageForUserScripts("example.com", ExtensionRuntime.PasswordProbeResult.UNKNOWN))
+    check("UNKNOWN probe is NOT sensitive for built-ins (host list only)",
+        !ExtensionRuntime.isSensitivePage("example.com", ExtensionRuntime.PasswordProbeResult.UNKNOWN))
+    check("NO_PASSWORD probe is not sensitive for user scripts",
+        !ExtensionRuntime.isSensitivePageForUserScripts("example.com", ExtensionRuntime.PasswordProbeResult.NO_PASSWORD))
+    check("HAS_PASSWORD probe is sensitive for both kinds",
+        ExtensionRuntime.isSensitivePage("example.com", ExtensionRuntime.PasswordProbeResult.HAS_PASSWORD) &&
+            ExtensionRuntime.isSensitivePageForUserScripts("example.com", ExtensionRuntime.PasswordProbeResult.HAS_PASSWORD))
+    check("sensitive host is sensitive for both kinds even on NO_PASSWORD",
+        ExtensionRuntime.isSensitivePage("paypal.com", ExtensionRuntime.PasswordProbeResult.NO_PASSWORD) &&
+            ExtensionRuntime.isSensitivePageForUserScripts("paypal.com", ExtensionRuntime.PasswordProbeResult.NO_PASSWORD))
+
+    // Fail closed: UNKNOWN blocks user scripts, runs built-ins.
+    check("UNKNOWN probe BLOCKS a user script (fail closed)",
+        ExtensionRuntime.scriptsForUrl(listOf(wideScript), "https://example.com/", probe = ExtensionRuntime.PasswordProbeResult.UNKNOWN).isEmpty())
+    check("UNKNOWN probe blocks a user script even when no probe arg is passed (default is UNKNOWN)",
+        ExtensionRuntime.scriptsForUrl(listOf(wideScript), "https://example.com/").isEmpty())
+    check("UNKNOWN probe does NOT block a built-in script",
+        ExtensionRuntime.scriptsForUrl(listOf(hider), "https://example.com/", probe = ExtensionRuntime.PasswordProbeResult.UNKNOWN).size == 1)
+    check("UNKNOWN probe does NOT block the skipper on YouTube",
+        ExtensionRuntime.scriptsForUrl(listOf(skipper), "https://www.youtube.com/watch?v=x", probe = ExtensionRuntime.PasswordProbeResult.UNKNOWN).size == 1)
+    check("UNKNOWN probe still blocks user scripts on a sensitive host (both layers agree)",
+        ExtensionRuntime.scriptsForUrl(listOf(wideScript), "https://paypal.com/", probe = ExtensionRuntime.PasswordProbeResult.UNKNOWN).isEmpty())
+    check("UNKNOWN probe still blocks a built-in on a sensitive host",
+        ExtensionRuntime.scriptsForUrl(listOf(hider), "https://paypal.com/", probe = ExtensionRuntime.PasswordProbeResult.UNKNOWN).isEmpty())
+    check("explicit allow overrides UNKNOWN for a user script",
+        ExtensionRuntime.scriptsForUrl(listOf(allowedScript), "https://example.com/", probe = ExtensionRuntime.PasswordProbeResult.UNKNOWN).size == 1)
+    check("NO_PASSWORD probe lets a user script run (decision table)",
+        ExtensionRuntime.scriptsForUrl(listOf(wideScript), "https://example.com/", probe = ExtensionRuntime.PasswordProbeResult.NO_PASSWORD).size == 1)
+    check("HAS_PASSWORD probe blocks a user script (decision table)",
+        ExtensionRuntime.scriptsForUrl(listOf(wideScript), "https://example.com/", probe = ExtensionRuntime.PasswordProbeResult.HAS_PASSWORD).isEmpty())
+    check("HAS_PASSWORD probe blocks a built-in script (decision table)",
+        ExtensionRuntime.scriptsForUrl(listOf(hider), "https://example.com/", probe = ExtensionRuntime.PasswordProbeResult.HAS_PASSWORD).isEmpty())
+    check("scriptsForRunAt honours UNKNOWN the same way (document-start user script blocked)",
+        ExtensionRuntime.scriptsForRunAt(listOf(startScript), "https://example.com/", RunAt.DOCUMENT_START, probe = ExtensionRuntime.PasswordProbeResult.UNKNOWN).isEmpty())
+
+    // Probe JS structure: shadow-DOM recursion + same-origin iframe
+    // descent + the "error" UNKNOWN marker. (This checks the JS string;
+    // real shadow-DOM/iframe pages need a phone — see the report.)
+    val probeJs = ExtensionRuntime.PASSWORD_FIELD_PROBE_JS
+    check("probe JS looks for input[type=password]", probeJs.contains("input[type=password]"))
+    check("probe JS descends into shadow roots", probeJs.contains("shadowRoot"))
+    check("probe JS descends into same-origin iframes", probeJs.contains("contentDocument"))
+    check("probe JS catches per-frame cross-origin failures", probeJs.contains("catch(e)"))
+    check("probe JS returns the 'error' UNKNOWN marker", probeJs.contains("'error'"))
+    check("probe JS returns string markers, not booleans",
+        probeJs.contains("'true'") && probeJs.contains("'false'") && !probeJs.contains("return true;})"))
+    check("probe JS never returns bare false as a probe result",
+        !probeJs.contains("return false;})();"))
+
+    // Expanded sensitive host list (~30): new entries, subdomains, lookalikes.
+    check("chase.com is sensitive", ExtensionRuntime.isSensitiveHost("chase.com"))
+    check("www.chase.com is sensitive", ExtensionRuntime.isSensitiveHost("www.chase.com"))
+    check("bankofamerica.com is sensitive", ExtensionRuntime.isSensitiveHost("bankofamerica.com"))
+    check("hsbc.com is sensitive", ExtensionRuntime.isSensitiveHost("hsbc.com"))
+    check("dbs.com is sensitive", ExtensionRuntime.isSensitiveHost("dbs.com"))
+    check("ocbc.com is sensitive", ExtensionRuntime.isSensitiveHost("ocbc.com"))
+    check("uob.com is sensitive", ExtensionRuntime.isSensitiveHost("uob.com"))
+    check("maybank2u.com.my is sensitive", ExtensionRuntime.isSensitiveHost("maybank2u.com.my"))
+    check("online.maybank2u.com.my is sensitive", ExtensionRuntime.isSensitiveHost("online.maybank2u.com.my"))
+    check("cimb.com is sensitive", ExtensionRuntime.isSensitiveHost("cimb.com"))
+    check("wellsfargo.com is sensitive", ExtensionRuntime.isSensitiveHost("wellsfargo.com"))
+    check("capitalone.com is sensitive", ExtensionRuntime.isSensitiveHost("capitalone.com"))
+    check("americanexpress.com is sensitive", ExtensionRuntime.isSensitiveHost("americanexpress.com"))
+    check("amazon.com is sensitive", ExtensionRuntime.isSensitiveHost("amazon.com"))
+    check("facebook.com is sensitive", ExtensionRuntime.isSensitiveHost("facebook.com"))
+    check("github.com is sensitive", ExtensionRuntime.isSensitiveHost("github.com"))
+    check("login.github.com is sensitive", ExtensionRuntime.isSensitiveHost("login.github.com"))
+    check("gitlab.com is sensitive", ExtensionRuntime.isSensitiveHost("gitlab.com"))
+    check("icloud.com is sensitive", ExtensionRuntime.isSensitiveHost("icloud.com"))
+    check("outlook.live.com is sensitive", ExtensionRuntime.isSensitiveHost("outlook.live.com"))
+    check("proton.me is sensitive", ExtensionRuntime.isSensitiveHost("proton.me"))
+    check("mail.proton.me is sensitive", ExtensionRuntime.isSensitiveHost("mail.proton.me"))
+    check("venmo.com is sensitive", ExtensionRuntime.isSensitiveHost("venmo.com"))
+    check("kraken.com is sensitive", ExtensionRuntime.isSensitiveHost("kraken.com"))
+    check("coinbase.com is still sensitive", ExtensionRuntime.isSensitiveHost("coinbase.com"))
+    check("chase.com.evil.com is NOT sensitive", !ExtensionRuntime.isSensitiveHost("chase.com.evil.com"))
+    check("fakegithub.com is NOT sensitive", !ExtensionRuntime.isSensitiveHost("fakegithub.com"))
+    check("amazon.com.evil.com is NOT sensitive", !ExtensionRuntime.isSensitiveHost("amazon.com.evil.com"))
+    check("proton.me.evil.com is NOT sensitive", !ExtensionRuntime.isSensitiveHost("proton.me.evil.com"))
+    check("notproton.me is NOT sensitive", !ExtensionRuntime.isSensitiveHost("notproton.me"))
+    check("user script does NOT run on new sensitive host chase.com",
+        ExtensionRuntime.scriptsForUrl(listOf(wideScript), "https://chase.com/login", probe = ExtensionRuntime.PasswordProbeResult.NO_PASSWORD).isEmpty())
+    check("user script does NOT run on github.com even with a clean probe",
+        ExtensionRuntime.scriptsForUrl(listOf(wideScript), "https://github.com/login", probe = ExtensionRuntime.PasswordProbeResult.NO_PASSWORD).isEmpty())
+
+    // DYNAMIC-FIELD RESIDUAL (documented, NOT solved): a password field
+    // added to the SAME page AFTER injection cannot be un-injected — the
+    // probe runs once per navigation (onPageFinished /
+    // doUpdateVisitedHistory) and the script is already running. This
+    // check exists so the residual is on the record in the test suite,
+    // not just in prose; there is no runtime behaviour to assert here.
+    check("DYNAMIC-FIELD RESIDUAL (documented, not solved): post-injection password fields cannot be un-injected", true)
 
     // --- W6 S-3: redirect + content-type rules (pure helpers, no network) ---
     check("https->https redirect is allowed",
@@ -441,6 +572,22 @@ fun main() {
     check("uppercase id is invalid (slugify output is lowercase)", !ExtensionRuntime.isValidScriptId("ABC"))
     check("underscore id is invalid", !ExtensionRuntime.isValidScriptId("a_b"))
     check("empty id is invalid", !ExtensionRuntime.isValidScriptId(""))
+
+    // --- AUDIT 2 (F05-B): InjectionDedupe — one injection per navigation ---
+    // onPageFinished + doUpdateVisitedHistory both fire per load, so the
+    // same URL twice in a row injects once; but an SPA navigation BACK
+    // to an earlier URL must re-inject (the old set never forgot it).
+    val dedupe = ExtensionRuntime.InjectionDedupe()
+    check("first injection of A runs", dedupe.shouldInject("https://www.youtube.com/watch?v=A"))
+    check("second injection of A in a row is skipped", !dedupe.shouldInject("https://www.youtube.com/watch?v=A"))
+    check("SPA navigation to B runs", dedupe.shouldInject("https://www.youtube.com/watch?v=B"))
+    check("SPA navigation back to A runs again", dedupe.shouldInject("https://www.youtube.com/watch?v=A"))
+    check("immediate repeat of A is skipped again", !dedupe.shouldInject("https://www.youtube.com/watch?v=A"))
+    dedupe.reset()
+    check("after reset (full navigation) A runs again", dedupe.shouldInject("https://www.youtube.com/watch?v=A"))
+    val dedupe2 = ExtensionRuntime.InjectionDedupe()
+    check("fresh dedupe injects", dedupe2.shouldInject("https://example.com/"))
+    check("fresh dedupe skips the repeat", !dedupe2.shouldInject("https://example.com/"))
 
     println("ExtensionsTest: $passed passed, ${failures.size} failed")
     if (failures.isNotEmpty()) {

@@ -30,6 +30,13 @@ SNAP="$ROOT/deps-snapshot"
 [ -f "$SNAP/jars.txt" ] || { echo "deps-snapshot/jars.txt missing — snapshot the Files deps first"; exit 1; }
 [ -f "$SNAP/aar-packages.txt" ] || { echo "deps-snapshot/aar-packages.txt missing"; exit 1; }
 
+# Verify the dependency snapshot against its pinned checksums (v2.2, F04).
+# Fails the build loudly on any missing or tampered artifact. After a
+# snapshot rebuild, re-pin tools/deps-checksums.txt first (see README,
+# Build step 4) — a fresh re-fetch resolves different transitive versions
+# and will fail this check until re-pinned.
+"$ROOT/tools/verify-deps.sh" || exit 1
+
 rm -rf "$BUILD/apk" "$BUILD/gen" "$BUILD/classes" "$BUILD/dex" "$BUILD/rclasses" "$BUILD/flat" "$BUILD/flat-zips"
 mkdir -p "$BUILD/apk" "$BUILD/gen" "$BUILD/classes" "$BUILD/dex" "$BUILD/rclasses" "$BUILD/flat"
 # Use the private snapshot lists (absolute paths into deps-snapshot/).
@@ -53,7 +60,7 @@ echo "== 2. aapt2 link =="
 LINK_ARGS=(-I "$ANDROID_JAR" --manifest "$SRC/AndroidManifest.xml"
     --auto-add-overlay --java "$BUILD/gen"
     --min-sdk-version 29 --target-sdk-version 35
-    --version-code 5 --version-name 2.1
+    --version-code 6 --version-name 2.2
     -A "$SRC/assets"
     -o "$BUILD/apk/app-unsigned.apk")
 while read -r pkg resdir; do
