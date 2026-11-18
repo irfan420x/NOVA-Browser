@@ -47,6 +47,7 @@ ANDROID_JAR="$HOME/android-sdk/platforms/android-35/android.jar"
     "$SRC/com/nova/browser/devtools/DevToolsHub.kt" \
     "$ROOT/tests/AdBlockEngineTest.kt" \
     "$ROOT/tests/UrlUtilsTest.kt" \
+    "$ROOT/tests/CustomSearchHomeTest.kt" \
     "$ROOT/tests/CosmeticFilterTest.kt" \
     "$ROOT/tests/TabGroupsTest.kt" \
     "$ROOT/tests/ExtensionsTest.kt" \
@@ -65,6 +66,7 @@ FAIL=0
 for main in \
     com.nova.browser.adblock.AdBlockEngineTestKt \
     com.nova.browser.web.UrlUtilsTestKt \
+    com.nova.browser.web.CustomSearchHomeTestKt \
     com.nova.browser.web.CosmeticFilterTestKt \
     com.nova.browser.data.TabGroupsTestKt \
     com.nova.browser.extensions.ExtensionsTestKt \

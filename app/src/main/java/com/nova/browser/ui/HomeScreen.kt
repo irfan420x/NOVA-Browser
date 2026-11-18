@@ -111,7 +111,9 @@ fun HomeScreen(state: BrowserState) {
                 placeholder = { Text("Search with ${state.settings.searchEngine.label} or enter an address") },
                 leadingIcon = { Icon(Icons.Filled.Search, null) },
                 singleLine = true,
-                shape = RoundedCornerShape(14.dp),
+                // Expressive Dark (v2.3): the home search field is a pill,
+                // matching the bottom address bar.
+                shape = ExpressivePillShape,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                 keyboardActions = KeyboardActions(onGo = {
                     if (query.isNotBlank()) {

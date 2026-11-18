@@ -2,11 +2,36 @@
 
 A fast, private Android web browser for NOVA OS — clean by default, with a
 developer mode, its own extensions system, reader mode and a pause/resume
-downloader. Built with Kotlin + Jetpack Compose in the NOVA Glass Premium
-style (v2.1; Nebula Dark Premium before it).
+downloader. Built with Kotlin + Jetpack Compose in the NOVA Expressive Dark
+style (v2.3; Glass Premium v2.1 and Nebula Dark Premium before it).
 
 - **Package:** `com.nova.browser` · **minSdk 29** · **targetSdk 35**
-- **Version:** 2.2 (versionCode 6)
+- **Version:** 2.3 (versionCode 7)
+
+## v2.3 — Expressive Dark theme + custom search engine & home page (in progress)
+
+- **Expressive Dark retheme (style only)** — Material 3 Expressive: flat
+  warm dark-gray surfaces (#121214 background, #1E1E22 bars), floating
+  pill bottom bar with a 1dp hairline outline, pill address field (28dp,
+  56dp tall), 56dp nav touch targets, pill tonal container on the active
+  (home) icon, squircle new-tab button with the accent fill, 16dp tab
+  cards, color-coded rounded-square tab groups (6 fixed colors), bolder
+  tab-switcher titles, 14sp secondary text, rounded 4dp progress bar.
+  One warm-amber accent (#E8A33D); light theme keeps the same
+  shapes/spacing with inverted warm surfaces. No gradients, no glow, no
+  frosted-glass effect — and no backdrop-blur claim: Compose has no real
+  backdrop blur, so translucent surfaces are flat scrims.
+  Spec: `irfan420x/nova-muse-shared` — `THEME-DIRECTIONS.md` (Direction A).
+- **Custom search engine** — Settings → Search → Custom: enter a search
+  URL template with `%s` for the query (e.g.
+  `https://search.example.com/search?q=%s`). Invalid templates fall back
+  to Google; a custom engine gets history-only suggestions (no verified
+  suggestion endpoint is ever guessed).
+- **Custom home page** — Settings → Home page: enter a URL to load when
+  you press Home (blank = the built-in home screen). New tabs still open
+  the built-in home screen.
+- **No behavior change besides the two features above** — same taps,
+  flows, permissions and data; JVM tests must stay green (see below).
 
 ## v2.2 — Security & Reliability Audit (no new features)
 

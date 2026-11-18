@@ -16,15 +16,20 @@ import java.util.Locale
  * kill. Within a session, membership is by tab id ([Tab.groupId]).
  */
 
-/** The 6 group colours, all NOVA Nebula tokens (ARGB longs). */
-val NEBULA_GROUP_COLORS: List<Long> = listOf(
-    0xFF7C3AEDL, // gradient start violet
-    0xFF8B5CF6L, // primary violet
-    0xFF3B82F6L, // gradient end blue
-    0xFF22D3EEL, // secondary cyan
-    0xFFEC4899L, // tertiary pink (sparing)
-    0xFF34D399L  // success green
+/** The 6 group colours — Expressive Dark palette (v2.3), fixed so a
+ *  group's colour survives app restarts. Violet stays first so the
+ *  default first-group colour is unchanged from v2.2. */
+val EXPRESSIVE_GROUP_COLORS: List<Long> = listOf(
+    0xFF7C3AEDL, // violet
+    0xFFE8A33DL, // warm amber (theme accent)
+    0xFF4DB6ACL, // teal
+    0xFFF06292L, // rose
+    0xFF66BB6AL, // green
+    0xFF42A5F5L  // blue
 )
+
+/** Legacy name — repointed at the Expressive palette (Browser v2.3). */
+val NEBULA_GROUP_COLORS: List<Long> = EXPRESSIVE_GROUP_COLORS
 
 /** One tab group. [tabIds] is the in-session membership (tab ids);
  *  [memberUrls] is only filled by [TabStoreCodec] round-trips so TabStore

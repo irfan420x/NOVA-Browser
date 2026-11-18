@@ -43,6 +43,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.nova.browser.data.NEBULA_GROUP_COLORS
 import com.nova.browser.data.RecentlyClosedStack
 import com.nova.browser.data.Tab
@@ -237,9 +238,12 @@ fun TabSwitcherScreen(
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize().padding(16.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Expressive Dark (v2.3): the new-tab button is a squircle
+                // (12dp rounded square) with the accent fill.
                 Button(
                     onClick = { state.newTab("") },
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    shape = ExpressiveNewTabShape
                 ) {
                     Icon(Icons.Filled.Add, null)
                     Spacer(Modifier.width(4.dp))
@@ -570,7 +574,7 @@ fun TabSwitcherScreen(
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Box(
                                         Modifier.size(12.dp)
-                                            .background(Color(group.colorArgb), CircleShape)
+                                            .background(Color(group.colorArgb), RoundedCornerShape(4.dp))
                                     )
                                     Spacer(Modifier.width(8.dp))
                                     Text(group.name, modifier = Modifier.weight(1f))
@@ -737,7 +741,7 @@ private fun GroupHeader(
             .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)
     ) {
         Box(
-            Modifier.size(12.dp).background(Color(group.colorArgb), CircleShape)
+            Modifier.size(12.dp).background(Color(group.colorArgb), RoundedCornerShape(4.dp))
         )
         Spacer(Modifier.width(8.dp))
         Icon(Icons.Filled.Folder, null, Modifier.size(18.dp), tint = Color(group.colorArgb))
@@ -838,13 +842,16 @@ private fun TabCard(
             Spacer(Modifier.weight(1f))
             Text(
                 tab.title.ifBlank { if (tab.url.isBlank()) "New tab" else tab.url },
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                // M3 Expressive: bolder weights in the tab switcher — the
+                // selected tab's title is Bold, not SemiBold.
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
                 maxLines = 2, overflow = TextOverflow.Ellipsis
             )
             if (tab.url.isNotBlank()) {
                 Text(
                     tab.url,
-                    style = MaterialTheme.typography.bodySmall,
+                    // M3 Expressive: 14sp secondary text (was 12sp bodySmall).
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 14.sp),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1, overflow = TextOverflow.Ellipsis
                 )

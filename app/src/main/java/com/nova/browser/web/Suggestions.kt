@@ -247,7 +247,7 @@ data class LocalEntry(
 object Suggestions {
 
     /** Suggest endpoint for the active engine, or null when the engine has
-     *  no verified endpoint (Bing / unknown) — caller then skips the fetch. */
+     *  no verified endpoint (Bing / Custom / unknown) — caller then skips the fetch. */
     fun suggestUrl(engineId: String, query: String): String? {
         val q = try {
             URLEncoder.encode(query, "UTF-8")

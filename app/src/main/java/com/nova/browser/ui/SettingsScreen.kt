@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.dp
 import com.nova.browser.data.ClearOnExit
 import com.nova.browser.data.SearchEngine
 import com.nova.browser.data.WipeStatus
+import com.nova.browser.web.UrlUtils
 import com.nova.browser.devtools.DevToolsHub
 import androidx.compose.ui.graphics.Color
 
@@ -42,6 +43,8 @@ fun SettingsScreen(
     var desktopDefault by remember { mutableStateOf(settings.desktopModeDefault) }
     var textZoom by remember { mutableStateOf(settings.textZoom.toFloat()) }
     var engine by remember { mutableStateOf(settings.searchEngine) }
+    var customTemplate by remember { mutableStateOf(settings.customSearchTemplate) }
+    var homePage by remember { mutableStateOf(settings.homePageUrl) }
     var searchSuggestions by remember { mutableStateOf(settings.searchSuggestions) }
     var clearOnExit by remember { mutableStateOf(settings.clearOnExit) }
     var customRules by remember { mutableStateOf(settings.customFilterRules) }
@@ -114,20 +117,56 @@ fun SettingsScreen(
                         Text(candidate.label)
                     }
                 }
+                // v2.3: custom search engine — a full search URL with
+                // %s for the query. Saved as typed; an invalid template
+                // falls back to Google (UrlUtils.searchUrl), so a bad
+                // template can never break searching.
+                if (engine == SearchEngine.CUSTOM) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = customTemplate,
+                        onValueChange = {
+                            customTemplate = it
+                            settings.customSearchTemplate = it
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("https://search.example.com/search?q=%s") },
+                        label = { Text("Custom search URL") },
+                        singleLine = true
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        when {
+                            customTemplate.isBlank() ->
+                                "Enter a full address with %s where the search goes."
+                            UrlUtils.isValidSearchTemplate(customTemplate) ->
+                                "Searches will use this template."
+                            else ->
+                                "That address is not usable — searches will use Google until it is fixed. It must start with https:// and contain %s once."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 // W4: address-bar search suggestions. Exact wording from
                 // the hook spec — the user must know keystrokes leave the
                 // device while typing. L3: Bing has no verified
                 // suggestion endpoint (history-only) — say so instead of
-                // naming engines that do not apply. Hidden in private
-                // mode: suggestions never fire there, so the toggle
-                // would write a throwaway pref and promise nothing.
+                // naming engines that do not apply. Custom has no verified
+                // endpoint either (v2.3) — history-only, never a guessed
+                // parse. Hidden in private mode: suggestions never fire
+                // there, so the toggle would write a throwaway pref and
+                // promise nothing.
                 if (!state.privateMode) {
                     SettingsSwitch(
                         title = "Search suggestions",
-                        subtitle = if (engine == SearchEngine.BING) {
-                            "Bing has no verified suggestion endpoint — you get history-only suggestions. For the other engines, keystrokes are sent to the active search engine as you type."
-                        } else {
-                            "As you type, keystrokes are sent to the active search engine (Google / DuckDuckGo / Brave) to fetch suggestions. Turn off for history-only suggestions."
+                        subtitle = when (engine) {
+                            SearchEngine.BING ->
+                                "Bing has no verified suggestion endpoint — you get history-only suggestions. For the other engines, keystrokes are sent to the active search engine as you type."
+                            SearchEngine.CUSTOM ->
+                                "Custom has no verified suggestion endpoint — you get history-only suggestions."
+                            else ->
+                                "As you type, keystrokes are sent to the active search engine (Google / DuckDuckGo / Brave) to fetch suggestions. Turn off for history-only suggestions."
                         },
                         checked = searchSuggestions,
                         onChange = {
@@ -136,6 +175,35 @@ fun SettingsScreen(
                         }
                     )
                 }
+            }
+
+            // v2.3: custom home page — the URL loaded when Home is pressed.
+            // Blank = the built-in home screen; new tabs still open it.
+            SettingsSection("Home page") {
+                OutlinedTextField(
+                    value = homePage,
+                    onValueChange = {
+                        homePage = it
+                        settings.homePageUrl = it
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("https://example.com") },
+                    label = { Text("Custom home page") },
+                    singleLine = true
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    when {
+                        homePage.isBlank() ->
+                            "Blank = the built-in home screen."
+                        UrlUtils.normalizeHomePageUrl(homePage).isNotEmpty() ->
+                            "Home will open ${UrlUtils.normalizeHomePageUrl(homePage)}."
+                        else ->
+                            "That address is not usable — Home will keep opening the built-in home screen."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
             SettingsSection("Privacy") {
@@ -235,7 +303,7 @@ fun SettingsScreen(
                 }
                 SettingsSwitch(
                     title = "Dark theme",
-                    subtitle = "Glass Premium (light theme available)",
+                    subtitle = "Expressive Dark (light theme available)",
                     checked = darkTheme,
                     onChange = {
                         darkTheme = it

@@ -83,10 +83,10 @@ fun NovaBrowserApp(
     onSwitchToPrivate: () -> Unit = { }
 ) {
     NovaTheme(darkTheme = state.settings.darkTheme) {
-        // Glass Premium (v2.1): the gradient + glow canvas sits behind
+        // Expressive Dark (v2.3): a flat warm dark-gray canvas behind
         // everything; the root Surface is transparent and every screen's
         // Scaffold uses a transparent container color so it shows through.
-        GlassBackground(darkTheme = state.settings.darkTheme) {
+        ExpressiveBackground(darkTheme = state.settings.darkTheme) {
         Surface(Modifier.fillMaxSize(), color = Color.Transparent) {
             // Back from any sub-screen returns to the browser, never out of the app.
             if (state.screen != BrowserScreen.BROWSER) {
@@ -254,7 +254,8 @@ fun BrowserContent(state: BrowserState, onOpenPrivateTab: () -> Unit) {
             if (tab?.isLoading == true) {
                 LinearProgressIndicator(
                     progress = { (tab.progress.coerceIn(0, 100)) / 100f },
-                    modifier = Modifier.fillMaxWidth().height(2.dp),
+                    modifier = Modifier.fillMaxWidth().height(4.dp)
+                        .clip(RoundedCornerShape(50)),
                     color = MaterialTheme.colorScheme.primary,
                     trackColor = MaterialTheme.colorScheme.surface
                 )
@@ -313,9 +314,9 @@ fun BrowserBottomBar(state: BrowserState, tab: Tab?, onOpenPrivateTab: () -> Uni
     val context = LocalContext.current
     var addressText by remember { mutableStateOf("") }
     val focusRequester = remember { FocusRequester() }
-    // Glass Premium (v2.1): the bottom bar is translucent glass with a 1dp
-    // top hairline, so web content shows through slightly beneath it.
-    val hairline = MaterialTheme.colorScheme.outline
+    // Expressive Dark (v2.3): the bottom bar is a floating pill — a
+    // rounded container with a 1dp hairline outline, floating above the
+    // web content with margins on the sides and below.
     LaunchedEffect(state.addressEditing) {
         if (state.addressEditing) focusRequester.requestFocus()
     }
@@ -329,16 +330,7 @@ fun BrowserBottomBar(state: BrowserState, tab: Tab?, onOpenPrivateTab: () -> Uni
         context.startActivity(Intent.createChooser(intent, "Share page"))
     }
 
-    Column(
-        Modifier.background(MaterialTheme.colorScheme.surface)
-            .drawBehind {
-                val stroke = 1.dp.toPx()
-                drawLine(
-                    hairline, Offset(0f, stroke / 2f),
-                    Offset(size.width, stroke / 2f), strokeWidth = stroke
-                )
-            }
-    ) {
+    Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp)) {
         // W4: address-bar suggestions appear ABOVE the bottom bar — the
         // bar sits at the screen bottom, so a dropdown below the field
         // would be off-screen. Shown only while the user is editing.
@@ -353,22 +345,33 @@ fun BrowserBottomBar(state: BrowserState, tab: Tab?, onOpenPrivateTab: () -> Uni
                 }
             )
         }
+        // The pill container: address row + nav row inside one rounded
+        // container with a 1dp hairline outline.
+        Column(
+            Modifier.background(MaterialTheme.colorScheme.surface, ExpressivePillShape)
+                .border(1.dp, MaterialTheme.colorScheme.outline, ExpressivePillShape)
+                .clip(ExpressivePillShape)
+        ) {
         Row(
-            Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, top = 8.dp),
+            Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             ShieldButton(state, tab)
+            // Expressive Dark (v2.3): the address field is a floating
+            // pill — 28dp corners, 56dp tall, 1dp hairline outline.
             Box(
-                Modifier.weight(1f).padding(horizontal = 4.dp)
-                    .clip(RoundedCornerShape(12.dp))
+                Modifier.weight(1f).padding(horizontal = 4.dp).height(56.dp)
+                    .clip(ExpressivePillShape)
                     .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .border(1.dp, MaterialTheme.colorScheme.outline, ExpressivePillShape)
                     .clickable {
                         if (!state.addressEditing) {
                             addressText = tab?.url ?: ""
                             state.addressEditing = true
                         }
                     }
-                    .padding(horizontal = 12.dp, vertical = 2.dp)
+                    .padding(horizontal = 12.dp, vertical = 2.dp),
+                contentAlignment = Alignment.CenterStart
             ) {
                 if (state.addressEditing) {
                     TextField(
@@ -630,37 +633,58 @@ fun BrowserBottomBar(state: BrowserState, tab: Tab?, onOpenPrivateTab: () -> Uni
             }
         }
         Row(
-            Modifier.fillMaxWidth().padding(bottom = 4.dp),
+            Modifier.fillMaxWidth().padding(bottom = 8.dp, top = 4.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(
                 onClick = { try { tab?.webView?.goBack() } catch (_: Exception) { } },
-                enabled = tab?.canGoBack == true
+                enabled = tab?.canGoBack == true,
+                modifier = Modifier.size(56.dp)
             ) { Icon(Icons.Filled.ArrowBack, "Back") }
             IconButton(
                 onClick = { try { tab?.webView?.goForward() } catch (_: Exception) { } },
-                enabled = tab?.canGoForward == true
+                enabled = tab?.canGoForward == true,
+                modifier = Modifier.size(56.dp)
             ) { Icon(Icons.Filled.ArrowForward, "Forward") }
-            IconButton(onClick = { state.reloadCurrent() }) {
+            IconButton(
+                onClick = { state.reloadCurrent() },
+                modifier = Modifier.size(56.dp)
+            ) {
                 Icon(Icons.Filled.Refresh, "Reload")
             }
-            IconButton(onClick = { state.goHome() }) {
+            // M3 Expressive: the active icon gets a pill-shaped tonal
+            // container (accent at 12% alpha). Home is active on a home
+            // tab (blank URL).
+            IconButton(
+                onClick = { state.goHome() },
+                modifier = Modifier.size(56.dp)
+                    .background(
+                        if (tab?.url.isNullOrBlank()) {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                        } else Color.Transparent,
+                        CircleShape
+                    )
+            ) {
                 Icon(Icons.Filled.Home, "Home")
             }
-            IconButton(onClick = { state.screen = BrowserScreen.TABS }) {
+            IconButton(
+                onClick = { state.screen = BrowserScreen.TABS },
+                modifier = Modifier.size(56.dp)
+            ) {
                 TabCountBadge(count = state.tabs.size)
             }
+        }
         }
     }
 }
 
-/** Tab counter button (Chrome-style bordered square with the count). */
+/** Tab counter button (Chrome-style bordered rounded square with the count). */
 @Composable
 private fun TabCountBadge(count: Int) {
     Box(
         Modifier.size(28.dp)
-            .border(2.dp, MaterialTheme.colorScheme.onSurfaceVariant, RoundedCornerShape(6.dp)),
+            .border(2.dp, MaterialTheme.colorScheme.onSurfaceVariant, RoundedCornerShape(12.dp)),
         contentAlignment = Alignment.Center
     ) {
         Text(count.toString(), style = MaterialTheme.typography.labelMedium)

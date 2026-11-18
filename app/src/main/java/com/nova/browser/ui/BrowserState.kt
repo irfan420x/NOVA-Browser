@@ -458,7 +458,9 @@ class BrowserState(
 
     /** Resolve address-bar input (URL or search) and load it in the current tab. */
     fun loadInput(input: String) {
-        val url = UrlUtils.resolveInput(input, settings.searchEngine.id)
+        val url = UrlUtils.resolveInput(
+            input, settings.searchEngine.id, settings.customSearchTemplate
+        )
         if (url.isEmpty()) return
         val tab = currentTab ?: newTab()
         loadUrl(tab, url)
@@ -467,6 +469,14 @@ class BrowserState(
 
     fun goHome() {
         val tab = currentTab ?: newTab()
+        // v2.3: a custom home page loads instead of the built-in home
+        // screen. Blank or unusable setting = built-in home, as before.
+        val home = UrlUtils.normalizeHomePageUrl(settings.homePageUrl)
+        if (home.isNotEmpty()) {
+            loadUrl(tab, home)
+            screen = BrowserScreen.BROWSER
+            return
+        }
         tab.url = ""
         tab.title = ""
         tab.error = null

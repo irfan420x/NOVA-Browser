@@ -3,7 +3,6 @@ package com.nova.browser.ui
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.RowScope
@@ -26,75 +25,105 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 
-// NOVA Glass — Glass Premium design language (Browser v2.1;
-// see ~/workspace/nova-design/NOVA-GLASS-DESIGN.md).
-// Dark-first glassmorphism: deep gradient background + violet glow,
-// frosted translucent surfaces, 1dp hairline borders.
-// The old Nebula token names are kept as aliases so every screen keeps
-// compiling — their values now point at the glass palette.
+// NOVA Expressive Dark — Material 3 Expressive design language
+// (Browser v2.3; replaces Glass Premium v2.1, which the user rejected
+// on the phone, and Nebula v2.0 before it).
+// Warm dark-gray flat surfaces, pill shapes, one warm-amber accent.
+// No gradients, no glow, no frosted-glass effect: Compose has no real
+// backdrop blur (Modifier.blur only blurs a composable's own content),
+// so translucent surfaces here are flat scrims and are never described
+// as blur. See ~/workspace/nova-muse-shared/THEME-DIRECTIONS.md
+// (Direction A) for the research and the reference links.
+// The old Glass/Nebula token names are kept as aliases so every screen
+// keeps compiling — their values now point at the Expressive palette.
 
-// Glass tokens — dark.
-val GlassDarkBackground = Color(0xFF0B0E1E) // gradient start / fallback solid
-val GlassDarkBackgroundEnd = Color(0xFF12142A) // gradient end
-val GlassSurface = Color(0x14FFFFFF) // white 8% — bars, cards
-val GlassSurfaceSoft = Color(0x0FFFFFFF) // white 6%
-val GlassSurfaceFaint = Color(0x0AFFFFFF) // white 4%
-val GlassBorder = Color(0x1FFFFFFF) // white 12% — 1dp glass border (dark)
-val GlassBorderSoft = Color(0x14FFFFFF) // white 8%
-// Smoked glass — floating elements over arbitrary web content (menus,
-// dropdowns, dialogs, sheets). A 6–10% white fill over a bright page
-// washes out and near-white text goes unreadable, so floating elements
-// use a mostly-opaque dark navy instead. Still translucent at the edges.
-val GlassFloating = Color(0xE514172B) // 90% opaque #14172B
-val GlassFloatingStrong = Color(0xE01B1F38) // 88% opaque #1B1F38
-val GlassFloatingSoft = Color(0xD91B1F38) // 85% opaque #1B1F38
-val GlassGlowDark = Color(0x297C3AED) // violet 16% — radial glow
+// Expressive tokens — dark.
+val ExpressiveDarkBackground = Color(0xFF121214) // warm dark gray, not black
+val ExpressiveSurface = Color(0xFF1E1E22) // bars, address pill
+val ExpressiveSurfaceVariant = Color(0xFF26262B) // fields inside the pill
+val ExpressiveSurfaceFaint = Color(0xFF17171A) // lowest container
+val ExpressiveFloating = Color(0xE5232327) // 90% opaque #232327 — menus, sheets
+val ExpressiveFloatingStrong = Color(0xE026262B) // 88% opaque #26262B
+val ExpressiveFloatingSoft = Color(0xD92A2A2F) // 85% opaque #2A2A2F
+val ExpressiveBorder = Color(0x14FFFFFF) // white 8% — 1dp hairline (dark)
+val ExpressiveBorderSoft = Color(0x0AFFFFFF) // white 4%
+val ExpressiveAccent = Color(0xFFE8A33D) // warm amber — the one accent
+val ExpressiveAccentDark = Color(0xFFC78A2E) // amber, darker end of gradient
+val ExpressiveOnSurface = Color(0xFFF5F1EA) // warm white text
+val ExpressiveMuted = Color(0xFFA8A29A) // warm gray secondary text
+val ExpressiveError = Color(0xFFF87171)
+val ExpressiveSuccess = Color(0xFF34D399)
+val ExpressiveSecondary = Color(0xFF4DB6AC) // teal
+val ExpressiveTertiary = Color(0xFFF06292) // rose, sparing
 
-// Glass tokens — light.
-val GlassLightBackground = Color(0xFFF4F5FB)
-val GlassLightBackgroundEnd = Color(0xFFE8EAF6)
-val GlassLightSurface = Color(0xB3FFFFFF) // white 70%
-val GlassLightSurfaceSoft = Color(0x99FFFFFF) // white 60%
-val GlassLightBorder = Color(0x1A14172B) // dark 10%
-val GlassLightBorderSoft = Color(0x0F14172B) // dark 6%
-val GlassLightFloating = Color(0xE0FFFFFF) // white 88%
-val GlassLightFloatingStrong = Color(0xE6FFFFFF) // white 90%
-val GlassLightFloatingSoft = Color(0xEBFFFFFF) // white 92%
-val GlassGlowLight = Color(0x1A7C3AED) // violet 10%
+// Expressive tokens — light (same shapes/spacing, inverted surfaces).
+val ExpressiveLightBackground = Color(0xFFF7F4EF) // warm off-white
+val ExpressiveLightSurface = Color(0xFFFFFFFF)
+val ExpressiveLightSurfaceVariant = Color(0xFFF0ECE6)
+val ExpressiveLightSurfaceFaint = Color(0xFFFFFDF8)
+val ExpressiveLightFloating = Color(0xE6FFFFFF) // white 90%
+val ExpressiveLightFloatingStrong = Color(0xEBFFFFFF) // white 92%
+val ExpressiveLightFloatingSoft = Color(0xF0FFFFFF) // white 94%
+val ExpressiveLightBorder = Color(0x1414172B) // dark 8% — 1dp hairline (light)
+val ExpressiveLightBorderSoft = Color(0x0A14172B) // dark 4%
+// Darker amber in light mode: #E8A33D on white is unreadable as text.
+val ExpressiveLightAccent = Color(0xFFA66E14)
+val ExpressiveLightOnSurface = Color(0xFF1C1A17)
+val ExpressiveLightMuted = Color(0xFF5A564F)
 
-// Background gradient brushes (vertical; sized by the drawn area).
+// Glass tokens — repointed at the Expressive palette (Browser v2.3).
+val GlassDarkBackground = ExpressiveDarkBackground
+val GlassDarkBackgroundEnd = ExpressiveDarkBackground
+val GlassSurface = ExpressiveSurface
+val GlassSurfaceSoft = ExpressiveSurfaceVariant
+val GlassSurfaceFaint = ExpressiveSurfaceFaint
+val GlassBorder = ExpressiveBorder
+val GlassBorderSoft = ExpressiveBorderSoft
+val GlassFloating = ExpressiveFloating
+val GlassFloatingStrong = ExpressiveFloatingStrong
+val GlassFloatingSoft = ExpressiveFloatingSoft
+val GlassGlowDark = Color.Transparent // v2.3: no glow — kept so old refs compile
+val GlassLightBackground = ExpressiveLightBackground
+val GlassLightBackgroundEnd = ExpressiveLightBackground
+val GlassLightSurface = ExpressiveLightSurface
+val GlassLightSurfaceSoft = ExpressiveLightSurfaceVariant
+val GlassLightBorder = ExpressiveLightBorder
+val GlassLightBorderSoft = ExpressiveLightBorderSoft
+val GlassLightFloating = ExpressiveLightFloating
+val GlassLightFloatingStrong = ExpressiveLightFloatingStrong
+val GlassLightFloatingSoft = ExpressiveLightFloatingSoft
+val GlassGlowLight = Color.Transparent // v2.3: no glow
+
+// Background brushes — flat solids now (v2.1 used a vertical gradient).
 val GlassDarkBackgroundBrush: Brush = Brush.verticalGradient(
-    listOf(GlassDarkBackground, GlassDarkBackgroundEnd)
+    listOf(ExpressiveDarkBackground, ExpressiveDarkBackground)
 )
 val GlassLightBackgroundBrush: Brush = Brush.verticalGradient(
-    listOf(GlassLightBackground, GlassLightBackgroundEnd)
+    listOf(ExpressiveLightBackground, ExpressiveLightBackground)
 )
 
-// Legacy Nebula token names — repointed at the glass palette (Browser v2.1).
-val NebulaBackground = GlassDarkBackground
-val NebulaSurface = GlassSurface
-val NebulaElevated = Color(0x1FFFFFFF) // white 12% — glass raised surface
-val NebulaOutline = GlassBorder // white 12% — 1dp glass borders (dark)
-val NebulaPrimary = Color(0xFF8B5CF6) // violet
-val NebulaGradientStart = Color(0xFF7C3AED)
-val NebulaGradientEnd = Color(0xFF3B82F6)
-val NebulaSecondary = Color(0xFF22D3EE) // cyan
-val NebulaTertiary = Color(0xFFEC4899) // pink, sparing
-val NebulaOnSurface = Color(0xFFEDEFF7)
-val NebulaMuted = Color(0xFF9AA3C7) // secondary text
-val NebulaError = Color(0xFFF87171)
-val NebulaSuccess = Color(0xFF34D399)
+// Legacy Nebula token names — repointed at the Expressive palette.
+val NebulaBackground = ExpressiveDarkBackground
+val NebulaSurface = ExpressiveSurface
+val NebulaElevated = ExpressiveSurfaceVariant
+val NebulaOutline = ExpressiveBorder
+val NebulaPrimary = ExpressiveAccent
+val NebulaGradientStart = ExpressiveAccent
+val NebulaGradientEnd = ExpressiveAccentDark
+val NebulaSecondary = ExpressiveSecondary
+val NebulaTertiary = ExpressiveTertiary
+val NebulaOnSurface = ExpressiveOnSurface
+val NebulaMuted = ExpressiveMuted
+val NebulaError = ExpressiveError
+val NebulaSuccess = ExpressiveSuccess
 
 // Legacy aliases (short Nova* names used by the other NOVA apps).
 val NovaBg = NebulaBackground
@@ -111,7 +140,8 @@ val NovaMuted = NebulaMuted
 val NovaMissed = NebulaError
 val NovaGood = NebulaSuccess
 
-/** Primary gradient: FABs, active tab pills, hero accents, progress. */
+/** Primary gradient: FABs, active tab pills, hero accents, progress.
+ *  v2.3: amber → dark amber (was violet → blue). */
 val NebulaGradientBrush: Brush =
     Brush.horizontalGradient(listOf(NebulaGradientStart, NebulaGradientEnd))
 val NovaGradientBrush: Brush = NebulaGradientBrush
@@ -124,66 +154,57 @@ val NebulaGradientTintBrush: Brush = Brush.horizontalGradient(
     )
 )
 
-// Shapes — spec: cards 20dp, buttons 14dp, chips 12dp, FAB 16dp.
-val NovaCardShape = RoundedCornerShape(20.dp)
-val NovaButtonShape = RoundedCornerShape(14.dp)
+// Shapes — M3 Expressive: pill address bar, 16dp cards, 12dp squircle
+// new-tab button, 16dp buttons. (v2.1 was cards 20dp, buttons 14dp.)
+val ExpressivePillShape = RoundedCornerShape(28.dp)
+val ExpressiveNewTabShape = RoundedCornerShape(12.dp)
+val NovaCardShape = RoundedCornerShape(16.dp)
+val NovaButtonShape = RoundedCornerShape(16.dp)
 val NovaRowShape = RoundedCornerShape(12.dp)
 val NovaFabShape = RoundedCornerShape(16.dp)
 
 private val NovaShapes = Shapes(
-    extraSmall = RoundedCornerShape(8.dp),
-    // T2 (W7): buttons render with shapes.small — the spec says buttons
-    // are 14dp, so small is 14dp. Chips keep their own 12dp via
-    // NovaRowShape where the app draws them itself; the 2dp difference
-    // on stock M3 chips is not visible in practice.
-    small = RoundedCornerShape(14.dp),
-    medium = RoundedCornerShape(20.dp),
+    extraSmall = RoundedCornerShape(12.dp),
+    small = RoundedCornerShape(16.dp),
+    medium = RoundedCornerShape(16.dp),
     large = RoundedCornerShape(20.dp),
     extraLarge = RoundedCornerShape(28.dp)
 )
 
-/** Paint a surface with the Nebula gradient (primary buttons, FABs). */
+/** Paint a surface with the accent gradient (primary buttons, FABs). */
 fun Modifier.nebulaGradient(shape: Shape = NovaButtonShape): Modifier =
     this.background(NebulaGradientBrush, shape)
 
 /**
- * Glass background — the app's canvas. Paints the vertical gradient plus a
- * soft radial violet glow at the top, computed from the real size so the
- * glow stays centered on any screen. Every screen's Scaffold uses a
- * transparent container color so this shows through; translucent surfaces
- * floating over it are what make the glass look.
+ * Expressive background — the app's canvas. A flat warm dark-gray
+ * (light: warm off-white). No gradient, no glow: M3 Expressive is
+ * shape + spacing + color, not an effect. Every screen's Scaffold uses
+ * a transparent container color so this shows through.
  */
 @Composable
-fun GlassBackground(darkTheme: Boolean = true, content: @Composable () -> Unit) {
-    val density = LocalDensity.current
+fun ExpressiveBackground(darkTheme: Boolean = true, content: @Composable () -> Unit) {
     Box(
         Modifier.fillMaxSize()
-            .background(if (darkTheme) GlassDarkBackgroundBrush else GlassLightBackgroundBrush)
+            .background(if (darkTheme) ExpressiveDarkBackground else ExpressiveLightBackground)
     ) {
-        BoxWithConstraints(Modifier.fillMaxSize()) {
-            val widthPx = with(density) { maxWidth.toPx() }
-            val heightPx = with(density) { maxHeight.toPx() }
-            val glow = remember(widthPx, heightPx, darkTheme) {
-                Brush.radialGradient(
-                    colors = listOf(
-                        if (darkTheme) GlassGlowDark else GlassGlowLight,
-                        Color.Transparent
-                    ),
-                    center = Offset(widthPx / 2f, 0f),
-                    radius = maxOf(widthPx, heightPx) * 0.85f
-                )
-            }
-            Box(Modifier.fillMaxSize().background(glow))
-        }
         content()
     }
 }
 
 /**
- * A glass card — M3 Card with the 1dp glass border by default
- * (`colorScheme.outline`, white 12% dark / dark 10% light). Call sites may
+ * GlassBackground — legacy name, kept so old call sites compile.
+ * It now paints the same flat Expressive canvas (no gradient, no glow).
+ */
+@Composable
+fun GlassBackground(darkTheme: Boolean = true, content: @Composable () -> Unit) {
+    ExpressiveBackground(darkTheme, content)
+}
+
+/**
+ * A glass card — M3 Card with the 1dp hairline border by default
+ * (`colorScheme.outline`, white 8% dark / dark 8% light). Call sites may
  * pass their own [border] (selected tab, private banner) or [colors] — both
- * are forwarded unchanged. A null [border] means "the default glass border";
+ * are forwarded unchanged. A null [border] means "the default hairline";
  * sites that draw their own border on the modifier keep plain Card instead.
  */
 @Composable
@@ -205,7 +226,7 @@ fun GlassCard(
 
 /**
  * A glass top bar — M3 TopAppBar (translucent surface) + a 1dp bottom
- * hairline, so every sub-screen gets the glass top bar without touching
+ * hairline, so every sub-screen gets the top bar without touching
  * each call site's arguments.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -230,76 +251,76 @@ fun GlassTopAppBar(
 }
 
 private val NovaDarkColors = darkColorScheme(
-    primary = NebulaPrimary,
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFF2E1F5E),
-    onPrimaryContainer = Color(0xFFDCD2FF),
-    secondary = NebulaSecondary,
-    onSecondary = Color(0xFF062A33),
-    secondaryContainer = Color(0xFF0E3A44),
-    onSecondaryContainer = Color(0xFFA5F3FC),
-    tertiary = NebulaTertiary,
+    primary = ExpressiveAccent,
+    onPrimary = Color(0xFF2A1D05),
+    primaryContainer = Color(0xFF4A3200),
+    onPrimaryContainer = Color(0xFFF5D9A8),
+    secondary = ExpressiveSecondary,
+    onSecondary = Color(0xFF062A28),
+    secondaryContainer = Color(0xFF0E3A36),
+    onSecondaryContainer = Color(0xFFB2DFDB),
+    tertiary = ExpressiveTertiary,
     onTertiary = Color.White,
     tertiaryContainer = Color(0xFF4A1230),
-    onTertiaryContainer = Color(0xFFFBCFE8),
-    error = NebulaError,
+    onTertiaryContainer = Color(0xFFF8BBD0),
+    error = ExpressiveError,
     onError = Color(0xFF2A0A0A),
     errorContainer = Color(0xFF4A1D1D),
     onErrorContainer = Color(0xFFFECACA),
-    background = GlassDarkBackground,
-    onBackground = NebulaOnSurface,
-    surface = GlassSurface,
-    onSurface = NebulaOnSurface,
-    surfaceVariant = GlassSurfaceSoft,
-    onSurfaceVariant = NebulaMuted,
-    surfaceTint = NebulaPrimary,
-    inverseSurface = NebulaOnSurface,
-    inverseOnSurface = GlassDarkBackground,
-    outline = GlassBorder,
-    outlineVariant = GlassBorderSoft,
+    background = ExpressiveDarkBackground,
+    onBackground = ExpressiveOnSurface,
+    surface = ExpressiveSurface,
+    onSurface = ExpressiveOnSurface,
+    surfaceVariant = ExpressiveSurfaceVariant,
+    onSurfaceVariant = ExpressiveMuted,
+    surfaceTint = ExpressiveAccent,
+    inverseSurface = ExpressiveOnSurface,
+    inverseOnSurface = ExpressiveDarkBackground,
+    outline = ExpressiveBorder,
+    outlineVariant = ExpressiveBorderSoft,
     scrim = Color.Black,
-    surfaceContainerLowest = GlassSurfaceFaint,
-    surfaceContainerLow = GlassSurface,
-    surfaceContainer = GlassFloating,
-    surfaceContainerHigh = GlassFloatingStrong,
-    surfaceContainerHighest = GlassFloatingSoft
+    surfaceContainerLowest = ExpressiveSurfaceFaint,
+    surfaceContainerLow = ExpressiveSurface,
+    surfaceContainer = ExpressiveFloating,
+    surfaceContainerHigh = ExpressiveFloatingStrong,
+    surfaceContainerHighest = ExpressiveFloatingSoft
 )
 
-// Light theme — light glass: white ~70% fills, soft shadows, same violet.
+// Light theme — same shapes/spacing, inverted warm surfaces.
 private val NovaLightColors = lightColorScheme(
-    primary = NebulaPrimary,
+    primary = ExpressiveLightAccent,
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFE9E4FF),
-    onPrimaryContainer = Color(0xFF2E1F5E),
-    secondary = Color(0xFF0891B2),
+    primaryContainer = Color(0xFFF5D9A8),
+    onPrimaryContainer = Color(0xFF4A3200),
+    secondary = Color(0xFF0F766E),
     onSecondary = Color.White,
-    secondaryContainer = Color(0xFFCFFAFE),
-    onSecondaryContainer = Color(0xFF164E63),
-    tertiary = Color(0xFFDB2777),
+    secondaryContainer = Color(0xFFB2DFDB),
+    onSecondaryContainer = Color(0xFF0E3A36),
+    tertiary = Color(0xFFBE185D),
     onTertiary = Color.White,
-    tertiaryContainer = Color(0xFFFBCFE8),
-    onTertiaryContainer = Color(0xFF500724),
+    tertiaryContainer = Color(0xFFF8BBD0),
+    onTertiaryContainer = Color(0xFF4A1230),
     error = Color(0xFFDC2626),
     onError = Color.White,
     errorContainer = Color(0xFFFEE2E2),
     onErrorContainer = Color(0xFF7F1D1D),
-    background = GlassLightBackground,
-    onBackground = Color(0xFF14172B),
-    surface = GlassLightSurface,
-    onSurface = Color(0xFF14172B),
-    surfaceVariant = GlassLightSurfaceSoft,
-    onSurfaceVariant = Color(0xFF5A6076),
-    surfaceTint = NebulaPrimary,
-    inverseSurface = Color(0xFF1B1F38),
-    inverseOnSurface = NebulaOnSurface,
-    outline = GlassLightBorder,
-    outlineVariant = GlassLightBorderSoft,
+    background = ExpressiveLightBackground,
+    onBackground = ExpressiveLightOnSurface,
+    surface = ExpressiveLightSurface,
+    onSurface = ExpressiveLightOnSurface,
+    surfaceVariant = ExpressiveLightSurfaceVariant,
+    onSurfaceVariant = ExpressiveLightMuted,
+    surfaceTint = ExpressiveLightAccent,
+    inverseSurface = Color(0xFF232327),
+    inverseOnSurface = ExpressiveOnSurface,
+    outline = ExpressiveLightBorder,
+    outlineVariant = ExpressiveLightBorderSoft,
     scrim = Color.Black,
-    surfaceContainerLowest = Color(0xCCFFFFFF),
-    surfaceContainerLow = GlassLightSurface,
-    surfaceContainer = GlassLightFloating,
-    surfaceContainerHigh = GlassLightFloatingStrong,
-    surfaceContainerHighest = GlassLightFloatingSoft
+    surfaceContainerLowest = ExpressiveLightSurfaceFaint,
+    surfaceContainerLow = ExpressiveLightSurface,
+    surfaceContainer = ExpressiveLightFloating,
+    surfaceContainerHigh = ExpressiveLightFloatingStrong,
+    surfaceContainerHighest = ExpressiveLightFloatingSoft
 )
 
 @Composable

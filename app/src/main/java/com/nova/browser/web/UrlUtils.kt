@@ -15,14 +15,57 @@ object UrlUtils {
         "brave" to "https://search.brave.com/search?q="
     )
 
-    fun searchUrl(engine: String, query: String): String {
+    fun searchUrl(engine: String, query: String, customTemplate: String? = null): String {
+        // Custom engine (v2.3): the user's own template, with %s for the
+        // query. An invalid or missing template falls back to Google —
+        // a bad template must never break searching.
+        if (engine == "custom" && isValidSearchTemplate(customTemplate)) {
+            return customTemplate!!.trim()
+                .replace("%s", URLEncoder.encode(query, "UTF-8"))
+        }
         val base = SEARCH_TEMPLATES[engine] ?: SEARCH_TEMPLATES["google"]!!
         return base + URLEncoder.encode(query, "UTF-8")
     }
 
+    /** A custom search template is usable when it is a full http(s) URL
+     *  with a host and exactly one "%s" placeholder for the query.
+     *  No whitespace anywhere — a space would silently break the URL. */
+    fun isValidSearchTemplate(template: String?): Boolean {
+        val t = template?.trim() ?: return false
+        if (t.isEmpty()) return false
+        if (t.any { it.isWhitespace() }) return false
+        val first = t.indexOf("%s")
+        if (first < 0 || first != t.lastIndexOf("%s")) return false
+        if (t.replace("%s", "").contains('%')) return false
+        return try {
+            val uri = java.net.URI(t.replace("%s", "x"))
+            (uri.scheme == "http" || uri.scheme == "https") &&
+                !uri.host.isNullOrBlank()
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /** Turn a raw home-page setting into a loadable URL, or "" when the
+     *  setting is blank or unusable (blank = the built-in home screen).
+     *  A bare domain gets https://; a localhost/LAN address gets http://. */
+    fun normalizeHomePageUrl(raw: String?): String {
+        val text = raw?.trim() ?: return ""
+        if (text.isEmpty()) return ""
+        if (text.any { it.isWhitespace() }) return ""
+        val lower = text.lowercase()
+        if (lower.startsWith("http://") || lower.startsWith("https://")) {
+            return if (extractHost(text) != null) text else ""
+        }
+        if (lower.startsWith("www.")) return "https://$text"
+        if (isLocalAddress(text)) return "http://$text"
+        if (looksLikeDomain(text)) return "https://$text"
+        return ""
+    }
+
     /** Turn what the user typed into a URL: a real address loads directly,
      *  anything else becomes a search with the chosen engine. */
-    fun resolveInput(input: String, searchEngine: String): String {
+    fun resolveInput(input: String, searchEngine: String, customTemplate: String? = null): String {
         val text = input.trim()
         if (text.isEmpty()) return ""
         val lower = text.lowercase()
@@ -32,7 +75,7 @@ object UrlUtils {
         if (lower.startsWith("www.")) return "https://$text"
         if (isLocalAddress(text)) return "http://$text"
         if (looksLikeDomain(text)) return "https://$text"
-        return searchUrl(searchEngine, text)
+        return searchUrl(searchEngine, text, customTemplate)
     }
 
     /** Host part of a URL, lowercased, without port or userinfo.

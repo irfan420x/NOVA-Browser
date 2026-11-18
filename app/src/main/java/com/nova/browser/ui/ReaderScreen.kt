@@ -69,9 +69,9 @@ fun ReaderScreen(
     BackHandler { onClose() }
 
     NovaTheme(darkTheme = dark) {
-        // Glass Premium (v2.1): Reader has its own light/dark toggle, so it
-        // paints its own gradient instead of relying on the app root's.
-        GlassBackground(darkTheme = dark) {
+        // Expressive Dark (v2.3): Reader has its own light/dark toggle, so it
+        // paints its own flat canvas instead of relying on the app root's.
+        ExpressiveBackground(darkTheme = dark) {
         Scaffold(
             containerColor = Color.Transparent,
             topBar = {

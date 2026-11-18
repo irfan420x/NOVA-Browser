@@ -2,12 +2,15 @@ package com.nova.browser.data
 
 import android.content.Context
 
-/** Search engines offered in Settings. Google is the default (user's choice). */
+/** Search engines offered in Settings. Google is the default (user's choice).
+ *  CUSTOM (v2.3) uses the user's own search URL template — see
+ *  [Settings.customSearchTemplate] and UrlUtils.isValidSearchTemplate. */
 enum class SearchEngine(val id: String, val label: String) {
     GOOGLE("google", "Google"),
     DUCKDUCKGO("duckduckgo", "DuckDuckGo"),
     BING("bing", "Bing"),
-    BRAVE("brave", "Brave Search");
+    BRAVE("brave", "Brave Search"),
+    CUSTOM("custom", "Custom");
 
     companion object {
         fun fromId(id: String?): SearchEngine =
@@ -38,6 +41,22 @@ class Settings(context: Context, private: Boolean = false) {
     var searchEngine: SearchEngine
         get() = SearchEngine.fromId(prefs.getString("search_engine", null))
         set(v) = prefs.edit().putString("search_engine", v.id).apply()
+
+    /** Custom search template (v2.3): a full http(s) URL with exactly one
+     *  "%s" for the query, e.g. "https://search.example.com/search?q=%s".
+     *  Used only when [searchEngine] is CUSTOM. An invalid template falls
+     *  back to Google (see UrlUtils.searchUrl) — it is stored as typed so
+     *  the user can fix it in Settings without losing the text. */
+    var customSearchTemplate: String
+        get() = prefs.getString("custom_search_template", "") ?: ""
+        set(v) = prefs.edit().putString("custom_search_template", v).apply()
+
+    /** Custom home page (v2.3): a URL loaded when the user presses Home.
+     *  Blank = the built-in home screen. Stored as typed; normalized by
+     *  UrlUtils.normalizeHomePageUrl when Home is pressed. */
+    var homePageUrl: String
+        get() = prefs.getString("home_page_url", "") ?: ""
+        set(v) = prefs.edit().putString("home_page_url", v).apply()
 
     /** Global ad-block switch. Per-site exceptions live in [adBlockOffHosts]. */
     var adBlockEnabled: Boolean
@@ -216,6 +235,8 @@ class Settings(context: Context, private: Boolean = false) {
     fun copySafeFrom(other: Settings) {
         darkTheme = other.darkTheme
         searchEngine = other.searchEngine
+        customSearchTemplate = other.customSearchTemplate
+        homePageUrl = other.homePageUrl
         adBlockEnabled = other.adBlockEnabled
         youtubeAdSkipper = other.youtubeAdSkipper
         suspendBackgroundTabs = other.suspendBackgroundTabs
