@@ -41,7 +41,14 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
-enum class BrowserScreen { BROWSER, TABS, BOOKMARKS, DOWNLOADS, SETTINGS, ERROR_LOG, EXTENSIONS, DEVTOOLS, HTTP_CLIENT }
+enum class BrowserScreen { BROWSER, TABS, BOOKMARKS, DOWNLOADS, SETTINGS, ERROR_LOG, EXTENSIONS, DEVTOOLS, HTTP_CLIENT, FB_STATE }
+
+/** A `.novaext` file the user picked in the system file picker, waiting
+ *  for the Extensions screen to validate it (NOVA-EXTENSIONS.md §2.1).
+ *  Held in memory only — a picked-but-unreviewed package is never stored.
+ *  [bytes] is capped at 512 KB + 1 byte by the picker result handler, so
+ *  an oversize file still reports the exact §1.5 check-2 string. */
+data class PendingNovaExt(val fileName: String, val bytes: ByteArray)
 
 /** One custom (pause/resume) download job (W4). Held in memory by
  *  BrowserState so DownloadsScreen can list it while it runs AND after
@@ -308,6 +315,13 @@ class BrowserState(
     var menuExpanded by mutableStateOf(false)
     var shieldOpen by mutableStateOf(false)
     var status by mutableStateOf<String?>(null)
+
+    /** A picked `.novaext` file awaiting validation in the Extensions
+     *  screen (v2.4). Set by BrowserHost when the file-picker result
+     *  arrives; the Extensions screen consumes it (validates, then clears
+     *  it) — a pending package is never stored before the user confirms
+     *  the install review. */
+    var pendingNovaExt by mutableStateOf<PendingNovaExt?>(null)
     var findBarForTabId by mutableStateOf<Long?>(null)
     var addressEditing by mutableStateOf(false)
 

@@ -135,6 +135,29 @@ object IntentValidator {
         data class LoadFallback(val url: String) : LaunchAction()
     }
 
+    /**
+     * `.novaext` file-open decision (NOVA-EXTENSIONS.md §2.1, Lane D2):
+     * is this ACTION_VIEW intent an attempt to open a `.novaext`
+     * package from NOVA Files (or any file manager)?
+     *
+     * True only when the action is ACTION_VIEW, the data scheme is
+     * `content` or `file` (the only schemes the manifest filter
+     * declares), and the data path ends with `.novaext`
+     * (case-insensitive — `.NOVAEXT` counts). An http(s) URL ending
+     * in `.novaext` is a web link, not a file open, and must keep
+     * loading in a tab. A null/missing path never matches.
+     *
+     * Pure Kotlin — no android.* imports, JVM-testable. The Android
+     * layer (BrowserHost.handleIntent) passes
+     * `intent.action`, `intent.data?.scheme`, `intent.data?.path`.
+     */
+    fun isNovaExtOpen(action: String?, scheme: String?, path: String?): Boolean {
+        if (action != ACTION_VIEW) return false
+        if (scheme != "content" && scheme != "file") return false
+        val p = path ?: return false
+        return p.endsWith(".novaext", ignoreCase = true)
+    }
+
     /** Pure launch decision for a validated intent. Never throws. */
     fun launchAction(
         dataUri: String?,

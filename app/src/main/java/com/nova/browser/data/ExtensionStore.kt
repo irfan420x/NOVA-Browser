@@ -251,7 +251,8 @@ object ExtensionStore {
         // the filesystem.
         if (!ExtensionRuntime.isValidScriptId(script.id)) return false
         if (script.id == ExtensionRuntime.YOUTUBE_SKIPPER_ID ||
-            script.id == ExtensionRuntime.COOKIE_HIDER_ID
+            script.id == ExtensionRuntime.COOKIE_HIDER_ID ||
+            script.id == ExtensionRuntime.FBSTATE_ID
         ) return false
         // N-13: never trust the caller — re-validate size, header and id
         // here, so a future caller bypassing installFromText cannot
@@ -288,7 +289,8 @@ object ExtensionStore {
         // a crafted id ("../../…") must never reach File().
         if (!ExtensionRuntime.isValidScriptId(id)) return false
         if (id == ExtensionRuntime.YOUTUBE_SKIPPER_ID ||
-            id == ExtensionRuntime.COOKIE_HIDER_ID
+            id == ExtensionRuntime.COOKIE_HIDER_ID ||
+            id == ExtensionRuntime.FBSTATE_ID
         ) return false
         invalidateEffectiveCache()
         return try {

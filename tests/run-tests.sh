@@ -30,6 +30,8 @@ ANDROID_JAR="$HOME/android-sdk/platforms/android-35/android.jar"
     "$SRC/com/nova/browser/data/TabGroup.kt" \
     "$SRC/com/nova/browser/extensions/Userscript.kt" \
     "$SRC/com/nova/browser/extensions/ExtensionRuntime.kt" \
+    "$SRC/com/nova/browser/extensions/NovaExtZip.kt" \
+    "$SRC/com/nova/browser/extensions/FbStateFormat.kt" \
     "$SRC/com/nova/browser/web/Suggestions.kt" \
     "$SRC/com/nova/browser/web/HttpsEnforcer.kt" \
     "$SRC/com/nova/browser/reader/ReaderExtractor.kt" \
@@ -51,6 +53,8 @@ ANDROID_JAR="$HOME/android-sdk/platforms/android-35/android.jar"
     "$ROOT/tests/CosmeticFilterTest.kt" \
     "$ROOT/tests/TabGroupsTest.kt" \
     "$ROOT/tests/ExtensionsTest.kt" \
+    "$ROOT/tests/FbStateTest.kt" \
+    "$ROOT/tests/ZipInstallTest.kt" \
     "$ROOT/tests/ReaderSuggestionsTest.kt" \
     "$ROOT/tests/DevToolsTest.kt" \
     "$ROOT/tests/HttpsEnforcerTest.kt" \
@@ -70,6 +74,8 @@ for main in \
     com.nova.browser.web.CosmeticFilterTestKt \
     com.nova.browser.data.TabGroupsTestKt \
     com.nova.browser.extensions.ExtensionsTestKt \
+    com.nova.browser.extensions.FbStateTestKt \
+    com.nova.browser.extensions.ZipInstallTestKt \
     com.nova.browser.web.ReaderSuggestionsTestKt \
     com.nova.browser.devtools.DevToolsTestKt \
     com.nova.browser.web.HttpsEnforcerTestKt \

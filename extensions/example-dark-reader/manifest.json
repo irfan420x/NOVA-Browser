@@ -1,0 +1,10 @@
+{
+  "manifest_version": 1,
+  "name": "Example Dark Reader",
+  "version": "1.0",
+  "description": "Demo .novaext package: forces a dark background on example.com pages.",
+  "matches": ["*://example.com/*", "*://*.example.com/*"],
+  "run-at": "document-end",
+  "content_script": "main.js",
+  "permissions": []
+}

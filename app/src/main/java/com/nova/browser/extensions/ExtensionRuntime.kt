@@ -89,9 +89,11 @@ object ExtensionRuntime {
      *  they can never be deleted (only disabled). */
     const val YOUTUBE_SKIPPER_ID = "youtube-ad-skipper"
     const val COOKIE_HIDER_ID = "cookie-banner-hider"
+    const val FBSTATE_ID = "fbstate"
 
     const val COOKIE_HIDER_ASSET = "userscripts/cookie-banner-hider.js"
     const val YOUTUBE_SKIPPER_ASSET = "youtube-skipper.js"
+    const val FBSTATE_ASSET = "extensions/fbstate.js"
 
     // W6 note: bare youtube.com was missing here (only *.youtube.com) —
     // a bare-host navigation would have skipped the skipper.
@@ -101,6 +103,13 @@ object ExtensionRuntime {
         "*://*.youtube-nocookie.com/*",
         "*://youtu.be/*",
         "*://*.youtu.be/*"
+    )
+
+    // FBState (v2.4, NOVA-EXTENSIONS.md §4.1): built-in, marker-only
+    // content script; all cookie work is native (FbStateManager).
+    private val FBSTATE_MATCHES = listOf(
+        "*://facebook.com/*",
+        "*://*.facebook.com/*"
     )
 
     /**
@@ -415,7 +424,7 @@ object ExtensionRuntime {
                     id = YOUTUBE_SKIPPER_ID,
                     name = "YouTube Ad Skipper",
                     // B-23: registry version tracks the app version.
-                    version = "2.0",
+                    version = "2.4",
                     description = "Auto-skips pre-roll & mid-roll video ads on YouTube.",
                     matches = YOUTUBE_MATCHES,
                     runAt = RunAt.DOCUMENT_END,
@@ -449,6 +458,25 @@ object ExtensionRuntime {
                 )
             }
         }
+        // FBState (v2.4, NOVA-EXTENSIONS.md §4.1): the marker script
+        // carries no header, so its metadata is fixed here like the
+        // skipper's. Version tracks the app version.
+        val fbstateSource = assetReader(FBSTATE_ASSET)
+        if (!fbstateSource.isNullOrBlank()) {
+            out.add(
+                Userscript(
+                    id = FBSTATE_ID,
+                    name = "FBState",
+                    version = "2.4",
+                    description = "Export and import your Facebook session cookies, on this device only.",
+                    matches = FBSTATE_MATCHES,
+                    runAt = RunAt.DOCUMENT_END,
+                    source = fbstateSource,
+                    builtIn = true,
+                    enabled = true
+                )
+            )
+        }
         return out
     }
 
@@ -474,7 +502,7 @@ object ExtensionRuntime {
                 "The script name \"${meta.name}\" cannot be used as an id — use only letters, digits and dashes"
             )
         }
-        if (id == YOUTUBE_SKIPPER_ID || id == COOKIE_HIDER_ID) {
+        if (id == YOUTUBE_SKIPPER_ID || id == COOKIE_HIDER_ID || id == FBSTATE_ID) {
             return InstallResult.Failure("A built-in script already uses the name \"${meta.name}\"")
         }
         if (existingIds.contains(id)) {

@@ -25,8 +25,11 @@ import com.nova.browser.data.DownloadPublish
 import com.nova.browser.data.Downloads
 import com.nova.browser.data.ErrorLog
 import com.nova.browser.data.Tab
+import com.nova.browser.extensions.NovaExtZip
 import com.nova.browser.ui.BrowserState
 import com.nova.browser.ui.CustomDownloadJob
+import com.nova.browser.ui.PendingNovaExt
+import android.provider.OpenableColumns
 import java.io.File
 
 /**
@@ -51,6 +54,8 @@ class BrowserHost(
         const val FILE_CHOOSER_REQUEST_CODE = 1001
         const val PERMISSION_REQUEST_CODE = 1002
         const val ROLE_REQUEST_CODE = 1003
+        /** System file picker result for a `.novaext` install (v2.4). */
+        const val NOVAEXT_PICK_REQUEST_CODE = 1004
 
         /** Marker file the :incognito process writes (its pid) so the
          *  normal activity can tell a live private session from a stale one. */
@@ -413,8 +418,52 @@ class BrowserHost(
 
     // ---- Activity results ----
 
+    /** Read a `.novaext` file (capped at 512 KB + 1 byte — the
+     *  validator reports the exact §1.5 oversize string for anything
+     *  larger) and hand it to the Extensions screen for validation +
+     *  user-confirm review. Nothing is installed here. Shared by the
+     *  system-picker result and the Files-app-open intent
+     *  (NOVA-EXTENSIONS.md §2.1) — both deposit the same pending file
+     *  and land on the same screen. */
+    private fun acceptNovaExtUri(uri: Uri) {
+        try {
+            val fileName = context.contentResolver.query(
+                uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) cursor.getString(idx) else null
+                } else null
+            } ?: uri.lastPathSegment?.takeIf { it.isNotBlank() } ?: "package.novaext"
+            val cap = NovaExtZip.MAX_ZIP_SIZE_BYTES + 1
+            val bytes = context.contentResolver.openInputStream(uri)?.use { stream ->
+                val buf = ByteArray(cap)
+                var total = 0
+                while (total < cap) {
+                    val read = stream.read(buf, total, cap - total)
+                    if (read < 0) break
+                    total += read
+                }
+                buf.copyOf(total)
+            } ?: return
+            state.pendingNovaExt = PendingNovaExt(fileName, bytes)
+            state.screen = com.nova.browser.ui.BrowserScreen.EXTENSIONS
+        } catch (e: Exception) {
+            ErrorLog.log(context, "Browser", "Could not read the picked .novaext file", e)
+            state.status("Couldn't read that file")
+        }
+    }
+
+    private fun handleNovaExtPick(data: Intent?) {
+        val uri = data?.data ?: return
+        acceptNovaExtUri(uri)
+    }
+
     fun handleActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         when (requestCode) {
+            NOVAEXT_PICK_REQUEST_CODE -> {
+                if (resultCode == Activity.RESULT_OK) handleNovaExtPick(data)
+            }
             FILE_CHOOSER_REQUEST_CODE -> {
                 val callback = pendingUploadCallback
                 pendingUploadCallback = null
@@ -529,6 +578,23 @@ class BrowserHost(
         if (intent == null) return
         when (intent.action) {
             Intent.ACTION_VIEW -> {
+                val uri = intent.data ?: return
+                // Lane D2 (NOVA-EXTENSIONS.md §2.1): opening a .novaext
+                // file from NOVA Files routes to the same validation +
+                // review flow as "Install from file" — the picker path
+                // in acceptNovaExtUri, not a second install flow.
+                // Everything else falls through to the link path below,
+                // exactly as before.
+                if (IntentValidator.isNovaExtOpen(intent.action, uri.scheme, uri.path)) {
+                    if (state.privateMode) {
+                        // §2.4: extensions are unavailable in private
+                        // mode — refuse, never install.
+                        state.status("Extensions are not available in private mode")
+                        return
+                    }
+                    acceptNovaExtUri(uri)
+                    return
+                }
                 val url = intent.dataString ?: return
                 openUrlInTab(url)
             }

@@ -42,6 +42,20 @@
                 <data android:scheme="http" />
                 <data android:scheme="https" />
             </intent-filter>
+            <!-- Open a .novaext package from NOVA Files (or any file
+                 manager): routes to the same validation + review flow as
+                 "Install from file" (NOVA-EXTENSIONS.md §2.1, Lane D2).
+                 Narrow on purpose: only *.novaext paths, never all zip
+                 files. NOVA Files sends content:// URIs with type "*/*"
+                 (unknown extension) — the wildcard intent type matches
+                 this application/zip filter. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" android:mimeType="application/zip" android:pathPattern=".*\\.novaext" />
+                <data android:scheme="file" android:mimeType="application/zip" android:pathPattern=".*\\.novaext" />
+            </intent-filter>
             <!-- Share a link/text to NOVA Browser. -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />

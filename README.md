@@ -6,7 +6,26 @@ downloader. Built with Kotlin + Jetpack Compose in the NOVA Expressive Dark
 style (v2.3; Glass Premium v2.1 and Nebula Dark Premium before it).
 
 - **Package:** `com.nova.browser` · **minSdk 29** · **targetSdk 35**
-- **Version:** 2.3 (versionCode 7)
+- **Version:** 2.4 (versionCode 8)
+
+## v2.4 — NOVA Extensions: `.novaext` zip install + built-in FBState
+
+- **`.novaext` zip install** — a `.novaext` file is a ZIP with
+  `manifest.json` + exactly one `.js` script (+ optional `icon.png`),
+  validated with exact user-facing error strings before anything is
+  written. Install from Extensions → "Install from file" (system file
+  picker). One package installs exactly one script; no network fetch,
+  no signature verification, no auto-update (delete + reinstall).
+  Example package shipped in the repo:
+  `extensions/example-dark-reader.novaext` (source in
+  `extensions/example-dark-reader/`).
+- **FBState (built-in)** — export and import Facebook session cookies
+  on this device only, via native `CookieManager` (never page JS).
+  Versioned `nova-fbstate` JSON export, Base64, and AES-256-GCM
+  encrypted export; import accepts NOVA + C3C bare-array / Base64 /
+  C3C-hex-encrypted data. First use asks for explicit confirmation to
+  run on facebook.com (a sensitive site). Unavailable in private mode.
+  Full spec: `NOVA-EXTENSIONS.md`.
 
 ## v2.3 — Expressive Dark theme + custom search engine & home page (in progress)
 

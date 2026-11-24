@@ -1,5 +1,7 @@
 package com.nova.browser.ui
 
+import android.app.Activity
+import android.content.Intent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -24,9 +26,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.nova.browser.data.ErrorLog
 import com.nova.browser.data.ExtensionStore
 import com.nova.browser.extensions.ExtensionRuntime
+import com.nova.browser.extensions.NovaExtZip
 import com.nova.browser.extensions.Userscript
+import com.nova.browser.web.BrowserHost
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -51,8 +57,11 @@ import androidx.compose.ui.graphics.Color
  *   (Settings.youtubeAdSkipper is its master switch); the Cookie Hider has
  *   its own stored toggle.
  * - User scripts are installed from a URL (fetched with HttpURLConnection,
- *   30 s timeout) or pasted text. Both paths validate the header (@name
- *   and at least one @match required) and reject scripts over 200 KB.
+ *   30 s timeout), pasted text, or a local `.novaext` zip (system file
+ *   picker → NovaExtZip validation → the same review dialog). All paths
+ *   validate the header (@name and at least one @match required) and
+ *   reject scripts over 200 KB; zip installs additionally validate the
+ *   manifest, the package layout, and the icon (NOVA-EXTENSIONS.md §1.5).
  * - Per-site on/off is a DISABLE list per script: a listed host (or its
  *   subdomains) never runs the script.
  *
@@ -62,7 +71,13 @@ import androidx.compose.ui.graphics.Color
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ExtensionsScreen(state: BrowserState, onBack: () -> Unit) {
+fun ExtensionsScreen(
+    state: BrowserState,
+    onBack: () -> Unit,
+    // v2.4: opens the FBState screen (Lane C's FbStateScreen, routed in
+    // BrowserScreen). Defaults to a no-op so existing call sites compile.
+    onOpenFbState: () -> Unit = {}
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var refreshKey by remember { mutableStateOf(0) }
@@ -85,6 +100,13 @@ fun ExtensionsScreen(state: BrowserState, onBack: () -> Unit) {
     // (A Userscript is not saveable, so an in-progress install is lost on
     // rotation — nothing is stored yet, so that is safe, just annoying.)
     var pendingInstall by remember { mutableStateOf<Userscript?>(null) }
+    // v2.4 zip install: the validated package behind pendingInstall, when
+    // the review is for a .novaext file (null for URL/paste installs).
+    // Carries the validated icon bytes + the sensitive-pages declaration
+    // for the review dialog, and the icon write after a confirmed install.
+    var pendingZipInstall by remember { mutableStateOf<NovaExtZip.ZipInstallResult.Ready?>(null) }
+    var pendingZipFileName by remember { mutableStateOf<String?>(null) }
+    var pendingZipSizeKb by remember { mutableStateOf(0) }
     var sensitiveHostText by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     // B-15: allowing a script on a sensitive host needs confirmation.
     var confirmSensitiveAllow by remember { mutableStateOf<Pair<ExtEntry, String>?>(null) }
@@ -139,6 +161,66 @@ fun ExtensionsScreen(state: BrowserState, onBack: () -> Unit) {
     }
 
     LaunchedEffect(refreshKey) { reload() }
+
+    // v2.4: a .novaext file picked in the system file picker arrives via
+    // BrowserState.pendingNovaExt (BrowserHost deposits it). Validate it
+    // fully BEFORE anything is written; on success show the same review
+    // dialog as a URL/paste install (full @match scope first — install
+    // is a trust decision), on failure show the exact §1.5 error string
+    // in the status line. Waits for the script list so the duplicate-id
+    // check sees every installed id. The pending file is consumed
+    // (cleared) either way — dismissing the review loses the pending
+    // install, and nothing is stored, same as today.
+    val pendingZip = state.pendingNovaExt
+    LaunchedEffect(pendingZip, entries) {
+        val picked = pendingZip ?: return@LaunchedEffect
+        val loaded = entries ?: return@LaunchedEffect // list still loading
+        state.pendingNovaExt = null
+        if (ExtensionStore.isPrivateProcess()) {
+            status = "Extensions are not available in private mode"
+            return@LaunchedEffect
+        }
+        val result = withContext(Dispatchers.IO) {
+            NovaExtZip.installFromZip(picked.bytes, loaded.map { it.script.id }.toSet())
+        }
+        when (result) {
+            is NovaExtZip.ZipInstallResult.Ready -> {
+                pendingInstall = result.script
+                pendingZipInstall = result
+                pendingZipFileName = picked.fileName
+                pendingZipSizeKb = (picked.bytes.size + 1023) / 1024
+            }
+            is NovaExtZip.ZipInstallResult.Failure -> {
+                status = "Install failed: ${result.reason}"
+            }
+        }
+    }
+
+    /** Open the system file picker for a `.novaext` package (v2.4, local
+     *  zip only — no network fetch). Classic onActivityResult path, like
+     *  the WebView file chooser: the result lands in
+     *  MainActivity.onActivityResult → BrowserHost.handleActivityResult,
+     *  which deposits the bytes in state.pendingNovaExt. */
+    fun launchZipPicker() {
+        val activity = context as? Activity
+        if (activity == null) {
+            status = "Couldn't open the file picker"
+            return
+        }
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/zip"
+            putExtra(
+                Intent.EXTRA_MIME_TYPES,
+                arrayOf("application/zip", "application/x-zip-compressed")
+            )
+        }
+        try {
+            activity.startActivityForResult(intent, BrowserHost.NOVAEXT_PICK_REQUEST_CODE)
+        } catch (_: Exception) {
+            status = "Couldn't open the file picker"
+        }
+    }
 
     /** B-14: a host input must be a bare host — no scheme, path, port or
      *  whitespace. Anything else can never match an extracted host and
@@ -265,13 +347,31 @@ fun ExtensionsScreen(state: BrowserState, onBack: () -> Unit) {
 
     fun doConfirmInstall() {
         val script = pendingInstall ?: return
+        val zipReady = pendingZipInstall
         scope.launch {
             val ok = withContext(Dispatchers.IO) {
                 ExtensionStore.install(context, script)
             }
+            if (ok && zipReady?.iconBytes != null) {
+                // §1.6: store a validated icon next to the script file,
+                // only after a successful install. The icon is cosmetic:
+                // a failed icon write is logged and the install still
+                // counts as done.
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        val iconsDir = File(context.filesDir, "extensions/icons")
+                        if (!iconsDir.exists()) iconsDir.mkdirs()
+                        File(iconsDir, "${script.id}.png").writeBytes(zipReady.iconBytes)
+                    }.onFailure { e ->
+                        ErrorLog.log(context, "Extensions", "Icon save failed for ${script.name}", e)
+                    }
+                }
+            }
             status = if (ok) "\"${script.name}\" installed"
             else "Could not save \"${script.name}\""
             pendingInstall = null
+            pendingZipInstall = null
+            pendingZipFileName = null
             refreshKey++
         }
     }
@@ -343,6 +443,39 @@ fun ExtensionsScreen(state: BrowserState, onBack: () -> Unit) {
                 }
                 OutlinedButton(onClick = { addInput = ""; addMode = "paste" }) {
                     Text("Paste script")
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { launchZipPicker() }) {
+                    Text("Install from ZIP")
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            // v2.4 FBState (Lane C): a built-in row with an "Open FBState"
+            // action (§6 item 3). The FBState screen itself refuses to
+            // open when FBState is disabled (§4.1) — this button only
+            // navigates there.
+            GlassCard(
+                Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Row(
+                    Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("FBState", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Export and import your Facebook session cookies, on this device only.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(onClick = onOpenFbState) { Text("Open FBState") }
                 }
             }
             Spacer(Modifier.height(12.dp))
@@ -439,6 +572,16 @@ fun ExtensionsScreen(state: BrowserState, onBack: () -> Unit) {
                         val ok = withContext(Dispatchers.IO) {
                             ExtensionStore.delete(context, target.id)
                         }
+                        if (ok) {
+                            // §2.3: a zip-installed script's stored icon
+                            // goes with it (best-effort; the store itself
+                            // is untouched — this is the UI-side file op).
+                            withContext(Dispatchers.IO) {
+                                runCatching {
+                                    File(context.filesDir, "extensions/icons/${target.id}.png").delete()
+                                }
+                            }
+                        }
                         status = if (ok) "\"${target.name}\" deleted"
                         else "Couldn't delete \"${target.name}\""
                         refreshKey++
@@ -482,7 +625,11 @@ fun ExtensionsScreen(state: BrowserState, onBack: () -> Unit) {
     val reviewing = pendingInstall
     if (reviewing != null) {
         AlertDialog(
-            onDismissRequest = { pendingInstall = null },
+            onDismissRequest = {
+                pendingInstall = null
+                pendingZipInstall = null
+                pendingZipFileName = null
+            },
             title = { Text("Install \"${reviewing.name}\"?") },
             text = {
                 Column {
@@ -514,13 +661,36 @@ fun ExtensionsScreen(state: BrowserState, onBack: () -> Unit) {
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    // v2.4 zip installs (§2.1): source file + the extra
+                    // sensitive-pages warning when the package declares it.
+                    val zipReady = pendingZipInstall
+                    if (zipReady != null) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Installed from file \"${pendingZipFileName ?: "package.novaext"}\" · $pendingZipSizeKb KB",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (zipReady.wantsSensitivePages) {
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                "This extension asks to run on login and banking pages. It will still need your explicit allow for each host.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
             },
             confirmButton = {
                 TextButton(onClick = { doConfirmInstall() }) { Text("Install") }
             },
             dismissButton = {
-                TextButton(onClick = { pendingInstall = null }) { Text("Cancel") }
+                TextButton(onClick = {
+                    pendingInstall = null
+                    pendingZipInstall = null
+                    pendingZipFileName = null
+                }) { Text("Cancel") }
             }
         )
     }

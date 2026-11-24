@@ -442,6 +442,89 @@ fun main() {
             IntentValidator.LaunchAction.LaunchApp
     )
 
+    // --- Lane D2: isNovaExtOpen — Files-app-open decision (§2.1) ---
+    // .novaext content Uri (the NOVA Files shape) matches.
+    check(
+        ".novaext content Uri matches",
+        IntentValidator.isNovaExtOpen(
+            VIEW, "content",
+            "/com.nova.files.provider/external_files/Download/example.novaext"
+        )
+    )
+    // file:// variant matches too (the manifest declares both schemes).
+    check(
+        ".novaext file Uri matches",
+        IntentValidator.isNovaExtOpen(VIEW, "file", "/storage/emulated/0/Download/example.novaext")
+    )
+    // A plain .zip is not a .novaext package.
+    check(
+        ".zip content Uri does not match",
+        !IntentValidator.isNovaExtOpen(
+            VIEW, "content",
+            "/com.nova.files.provider/external_files/Download/archive.zip"
+        )
+    )
+    // An http(s) URL ending in .novaext is a web link, not a file open —
+    // it must keep loading in a tab.
+    check(
+        "https URL ending in .novaext does not match",
+        !IntentValidator.isNovaExtOpen(VIEW, "https", "/files/example.novaext")
+    )
+    check(
+        "http URL ending in .novaext does not match",
+        !IntentValidator.isNovaExtOpen(VIEW, "http", "/files/example.novaext")
+    )
+    // Extension match is case-insensitive.
+    check(
+        "uppercase .NOVAEXT matches",
+        IntentValidator.isNovaExtOpen(
+            VIEW, "content",
+            "/com.nova.files.provider/external_files/Download/EXAMPLE.NOVAEXT"
+        )
+    )
+    check(
+        "mixed-case .NovaExt matches",
+        IntentValidator.isNovaExtOpen(VIEW, "content", "/Download/Example.NovaExt")
+    )
+    // Null / missing path never matches.
+    check(
+        "null path does not match",
+        !IntentValidator.isNovaExtOpen(VIEW, "content", null)
+    )
+    check(
+        "null scheme does not match",
+        !IntentValidator.isNovaExtOpen(VIEW, null, "/Download/example.novaext")
+    )
+    check(
+        "null action does not match",
+        !IntentValidator.isNovaExtOpen(null, "content", "/Download/example.novaext")
+    )
+    // Non-VIEW actions never match, even for a .novaext path.
+    check(
+        "SEND action with a .novaext path does not match",
+        !IntentValidator.isNovaExtOpen(
+            "android.intent.action.SEND", "content", "/Download/example.novaext"
+        )
+    )
+    // .novaext in the middle of the path is not a .novaext file.
+    check(
+        ".novaext directory segment does not match",
+        !IntentValidator.isNovaExtOpen(
+            VIEW, "content", "/Download/example.novaext/inner.txt"
+        )
+    )
+    // A bare filename with no path separator still matches (last
+    // segment is the file).
+    check(
+        "bare .novaext filename matches",
+        IntentValidator.isNovaExtOpen(VIEW, "content", "example.novaext")
+    )
+    // A file with no extension does not match.
+    check(
+        "extensionless path does not match",
+        !IntentValidator.isNovaExtOpen(VIEW, "content", "/Download/example")
+    )
+
     println("IntentValidatorTest: $passed passed, ${failures.size} failed")
     if (failures.isNotEmpty()) {
         failures.forEach { println("  FAIL: $it") }

@@ -108,6 +108,14 @@ fun NovaBrowserApp(
                 )
                 BrowserScreen.EXTENSIONS -> ExtensionsScreen(
                     state,
+                    onBack = { state.screen = BrowserScreen.BROWSER },
+                    onOpenFbState = { state.screen = BrowserScreen.FB_STATE }
+                )
+                // v2.4 FBState screen (Lane C): FbStateScreen(state, onBack)
+                // is the verified signature (FbStateScreen.kt:105) — Lane D
+                // confirmed it matches this call site.
+                BrowserScreen.FB_STATE -> FbStateScreen(
+                    state,
                     onBack = { state.screen = BrowserScreen.BROWSER }
                 )
                 BrowserScreen.DEVTOOLS -> DevToolsScreen(
